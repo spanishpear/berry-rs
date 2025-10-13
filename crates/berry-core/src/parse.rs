@@ -1748,14 +1748,14 @@ __metadata:
   }
 
   #[test]
-  fn test_parse_descriptor_line_conditional_long_wrapped() {
+  fn test_parse_descriptor_line_wrapped_long_line() {
     let input = r#"? "@babel/runtime@npm:^7.0.0, @babel/runtime@npm:^7.1.2, @babel/runtime@npm:^7.10.0"
 :"#;
     let result = parse_descriptor_line(input);
 
     assert!(
       result.is_ok(),
-      "Should successfully parse conditional package with long wrapped descriptor line"
+      "Should successfully parse long, wrapped-line descriptor"
     );
     let (remaining, descriptors) = result.unwrap();
     assert_eq!(remaining, "");
@@ -1776,8 +1776,8 @@ __metadata:
   }
 
   #[test]
-  fn test_parse_descriptor_line_conditional_short_no_wrap() {
-    // Test that short conditional lines still work (without newline wrap)
+  fn test_parse_descriptor_line_short_no_wrap() {
+    // Test that short lines with `?` prefix still work (without newline wrap)
     let input = r#"? "resolve@patch:resolve@npm%3A^1.0.0#optional!builtin<compat/resolve>":"#;
     let result = parse_descriptor_line(input);
 
@@ -1792,7 +1792,7 @@ __metadata:
   }
 
   #[test]
-  fn test_parse_conditional_package_entry_long_wrapped() {
+  fn test_parse_package_entry_long_wrapped_line() {
     // Test a complete package entry with the long wrapped descriptor pattern
     let input = r#"? "@babel/runtime@npm:^7.0.0, @babel/runtime@npm:^7.1.2, @babel/runtime@npm:^7.10.0, @babel/runtime@npm:^7.12.0"
 :
@@ -1807,7 +1807,7 @@ __metadata:
 
     assert!(
       result.is_ok(),
-      "Should successfully parse complete conditional package entry with long wrapped descriptor"
+      "Should successfully parse complete package entry with long wrapped descriptor"
     );
     let (remaining, (descriptors, package)) = result.unwrap();
     assert_eq!(remaining, "");
