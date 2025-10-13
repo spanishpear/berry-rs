@@ -93,21 +93,33 @@ pub fn parse_package_entry(input: &str) -> IResult<&str, (Vec<Descriptor>, Packa
 
 /// Parse a package descriptor line like: "debug@npm:1.0.0":, eslint-config-turbo@latest:, or ? "conditional@npm:1.0.0":
 pub fn parse_descriptor_line(input: &str) -> IResult<&str, Vec<Descriptor>> {
-  // Handle optional '? ' prefix for conditional packages
-  let (rest, _) = opt(tag("? ")).parse(input)?;
+  // Check for optional '? ' prefix for wrapped-line descriptors
+  let (rest, has_line_wrap_marker) = opt(tag("? ")).parse(input)?;
+  let is_wrapped_line = has_line_wrap_marker.is_some();
 
   // Handle both quoted and unquoted descriptors
-  let (rest, descriptor_string) = alt((
-    delimited(char('"'), take_until("\":"), tag("\":")), // Quoted: "package@npm:version":
-    // Handle very long descriptor lines that wrap: "very long descriptor..."\n:
-    delimited(
-      char('"'),
-      take_until("\""),
-      terminated(char('"'), preceded(newline, char(':'))),
-    ),
-    terminated(take_until(":"), char(':')), // Unquoted: package@latest:
-  ))
-  .parse(rest)?;
+  // Optimisation: when descriptors are prefixed with ? they are often "wrapped", so we check for that first
+  let (rest, descriptor_string) = if is_wrapped_line {
+    // For wrapped-line descriptors, try newline-wrapped format first
+    alt((
+      // Handle very long descriptor lines that wrap: "very long descriptor..."\n:
+      delimited(
+        char('"'),
+        take_until("\""),
+        terminated(char('"'), preceded(newline, char(':'))),
+      ),
+      delimited(char('"'), take_until("\":"), tag("\":")), // Quoted: "package@npm:version":
+      terminated(take_until(":"), char(':')), // Unquoted: package@latest:
+    ))
+    .parse(rest)?
+  } else {
+    // For normal descriptors, skip the newline-wrapped check entirely (performance optimisation)
+    alt((
+      delimited(char('"'), take_until("\":"), tag("\":")), // Quoted: "package@npm:version":
+      terminated(take_until(":"), char(':')), // Unquoted: package@latest:
+    ))
+    .parse(rest)?
+  };
 
   // Parse comma-separated descriptors using fold_many0 to avoid allocations
   let (remaining, descriptor_data) = {
@@ -1733,5 +1745,87 @@ __metadata:
     assert_eq!(package.dependencies.len(), 3);
     assert_eq!(package.bin.len(), 1);
     assert_eq!(package.bin.get("resolve"), Some(&"bin/resolve".to_string()));
+  }
+
+  #[test]
+  fn test_parse_descriptor_line_conditional_long_wrapped() {
+    let input = r#"? "@babel/runtime@npm:^7.0.0, @babel/runtime@npm:^7.1.2, @babel/runtime@npm:^7.10.0"
+:"#;
+    let result = parse_descriptor_line(input);
+
+    assert!(
+      result.is_ok(),
+      "Should successfully parse conditional package with long wrapped descriptor line"
+    );
+    let (remaining, descriptors) = result.unwrap();
+    assert_eq!(remaining, "");
+    assert_eq!(descriptors.len(), 3, "Should parse 3 descriptors");
+
+    // Verify first descriptor
+    assert_eq!(descriptors[0].ident().name(), "runtime");
+    assert_eq!(descriptors[0].ident().scope(), Some("@babel"));
+    assert_eq!(descriptors[0].range(), "npm:^7.0.0");
+
+    // Verify second descriptor
+    assert_eq!(descriptors[1].ident().name(), "runtime");
+    assert_eq!(descriptors[1].range(), "npm:^7.1.2");
+
+    // Verify third descriptor
+    assert_eq!(descriptors[2].ident().name(), "runtime");
+    assert_eq!(descriptors[2].range(), "npm:^7.10.0");
+  }
+
+  #[test]
+  fn test_parse_descriptor_line_conditional_short_no_wrap() {
+    // Test that short conditional lines still work (without newline wrap)
+    let input = r#"? "resolve@patch:resolve@npm%3A^1.0.0#optional!builtin<compat/resolve>":"#;
+    let result = parse_descriptor_line(input);
+
+    assert!(
+      result.is_ok(),
+      "Should successfully parse short conditional package without wrap"
+    );
+    let (remaining, descriptors) = result.unwrap();
+    assert_eq!(remaining, "");
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(descriptors[0].ident().name(), "resolve");
+  }
+
+  #[test]
+  fn test_parse_conditional_package_entry_long_wrapped() {
+    // Test a complete package entry with the long wrapped descriptor pattern
+    let input = r#"? "@babel/runtime@npm:^7.0.0, @babel/runtime@npm:^7.1.2, @babel/runtime@npm:^7.10.0, @babel/runtime@npm:^7.12.0"
+:
+  version: 7.28.4
+  resolution: "@babel/runtime@npm:7.28.4"
+  checksum: 10/6c9a70452322ea80b3c9b2a412bcf60771819213a67576c8cec41e88a95bb7bf01fc983754cda35dc19603eef52df22203ccbf7777b9d6316932f9fb77c25163
+  languageName: node
+  linkType: hard
+
+"#;
+    let result = parse_package_entry(input);
+
+    assert!(
+      result.is_ok(),
+      "Should successfully parse complete conditional package entry with long wrapped descriptor"
+    );
+    let (remaining, (descriptors, package)) = result.unwrap();
+    assert_eq!(remaining, "");
+    assert_eq!(descriptors.len(), 4, "Should parse 4 descriptors");
+
+    // Verify descriptors
+    assert_eq!(descriptors[0].ident().name(), "runtime");
+    assert_eq!(descriptors[0].ident().scope(), Some("@babel"));
+    assert_eq!(descriptors[0].range(), "npm:^7.0.0");
+    assert_eq!(descriptors[3].range(), "npm:^7.12.0");
+
+    // Verify the parsed package
+    assert_eq!(package.version, Some("7.28.4".to_string()));
+    assert_eq!(
+      package.resolution,
+      Some("@babel/runtime@npm:7.28.4".to_string())
+    );
+    assert_eq!(package.language_name.as_ref(), "node");
+    assert_eq!(package.link_type, LinkType::Hard);
   }
 }
