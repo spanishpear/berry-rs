@@ -3,7 +3,7 @@ use crate::locator::Locator;
 use crate::metadata::{DependencyMeta, PeerDependencyMeta};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The type of link to use for a package
 pub enum LinkType {
   /// The package manager owns the location (typically things within the cache)
@@ -16,7 +16,6 @@ pub enum LinkType {
   Soft,
 }
 
-// is there a derive for this?
 impl TryFrom<&str> for LinkType {
   type Error = ();
 
@@ -29,92 +28,57 @@ impl TryFrom<&str> for LinkType {
   }
 }
 
-/// The name of the binary being shipped by a dependency
-/// e.g. `napi`, `taplo`, `yarn`
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-struct BinaryName(String);
-
-/// <https://github.com/yarnpkg/berry/blob/master/packages/yarnpkg-fslib/sources/path.ts#L9>
-/// note - yarn uses internal types to differ between file paths and portable paths
-/// The path to the binary being shipped by a dependency
+/// Zero-copy package representation using borrowed strings
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-struct PortablePath(String);
-
-/// The resolved(?) version of the package dependency
-/// e.g. `1.2.3`, `1.2.3-beta.1`, `0.0.0-use-local`
-/// note: Not an identifier, as this is a literal version
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-struct PackageVersion(String);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanguageName(String);
-
-impl LanguageName {
-  pub fn new(name: String) -> Self {
-    Self(name)
-  }
-}
-
-impl AsRef<str> for LanguageName {
-  fn as_ref(&self) -> &str {
-    &self.0
-  }
-}
-
-// TODO: should the strings here be owned, or just &str for 'a
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Package {
+pub struct Package<'a> {
   /// Version of the package, if available
-  pub version: Option<String>,
+  pub version: Option<&'a str>,
 
   /// Resolution string for the package (raw, for round-trip)
-  pub resolution: Option<String>,
+  pub resolution: Option<&'a str>,
   /// Parsed resolution into a Locator (ident + reference)
-  pub resolution_locator: Option<Locator>,
+  pub resolution_locator: Option<Locator<'a>>,
 
   /// The "language" of the package (eg. `node`), for use with multi-linkers.
-  pub language_name: LanguageName,
+  pub language_name: &'a str,
 
-  /// Type of filesystem link for a pacakge
+  /// Type of filesystem link for a package
   pub link_type: LinkType,
 
   /// Checksum for the package
-  pub checksum: Option<String>,
+  pub checksum: Option<&'a str>,
 
   /// A set of constraints indicating whether the package supports the host environments
-  pub conditions: Option<String>,
+  pub conditions: Option<&'a str>,
 
   /// A map of the package's dependencies. There's no distinction between prod
   /// dependencies and dev dependencies, because those have already been merged
   /// during the resolution process
-  pub dependencies: HashMap<Ident, Descriptor>,
+  pub dependencies: HashMap<Ident<'a>, Descriptor<'a>>,
 
   /// Map with additional information about direct dependencies
-  pub dependencies_meta: HashMap<Ident, Option<DependencyMeta>>,
+  pub dependencies_meta: HashMap<Ident<'a>, Option<DependencyMeta>>,
 
-  /// Map of pacakges peer dependencies
-  pub peer_dependencies: HashMap<Ident, Descriptor>,
+  /// Map of packages peer dependencies
+  pub peer_dependencies: HashMap<Ident<'a>, Descriptor<'a>>,
 
   /// Map with additional information about peer dependencies
-  pub peer_dependencies_meta: HashMap<Ident, PeerDependencyMeta>,
+  pub peer_dependencies_meta: HashMap<Ident<'a>, PeerDependencyMeta>,
 
   /// all bin entries for the package
   ///
-  /// We don't need binaries in resolution, but we do neeed them to keep `yarn run` fast
+  /// We don't need binaries in resolution, but we do need them to keep `yarn run` fast
   /// else we have to parse and read all of the zipfiles
-  pub bin: HashMap<String, String>,
+  pub bin: HashMap<&'a str, &'a str>,
 }
 
-impl Package {
-  pub fn new(language_name: String, link_type: LinkType) -> Self {
+impl<'a> Package<'a> {
+  pub fn new(language_name: &'a str, link_type: LinkType) -> Self {
     Self {
       version: None,
       resolution: None,
       resolution_locator: None,
-      language_name: LanguageName::new(language_name),
+      language_name,
       link_type,
       checksum: None,
       conditions: None,
@@ -127,22 +91,22 @@ impl Package {
   }
 
   #[must_use]
-  pub fn with_version(mut self, version: String) -> Self {
+  pub fn with_version(mut self, version: &'a str) -> Self {
     self.version = Some(version);
     self
   }
 
   #[must_use]
-  pub fn with_resolution(mut self, resolution: String) -> Self {
+  pub fn with_resolution(mut self, resolution: &'a str) -> Self {
     self.resolution = Some(resolution);
     self
   }
 
   #[must_use]
-  pub fn with_checksum(mut self, checksum: String) -> Self {
+  pub fn with_checksum(mut self, checksum: &'a str) -> Self {
     self.checksum = Some(checksum);
     self
   }
 }
 
-pub type LockfileEntry = Package;
+pub type LockfileEntry<'a> = Package<'a>;

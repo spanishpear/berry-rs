@@ -1,10 +1,11 @@
 use berry::parse::parse_lockfile;
-use berry_test::load_fixture;
+use berry_test::{load_fixture, load_fixture_from_path};
 use clap::Parser;
 use memory_stats::memory_stats;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::hint::black_box;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser)]
@@ -14,6 +15,10 @@ struct Args {
   /// Fixture file to benchmark
   #[arg(short, long)]
   fixture: Option<String>,
+
+  /// Path to a lockfile to benchmark
+  #[arg(long = "fixture-path", value_name = "PATH", conflicts_with_all = ["fixture", "all"])]
+  fixture_path: Option<PathBuf>,
 
   /// Benchmark all fixtures
   #[arg(short, long)]
@@ -52,6 +57,55 @@ struct Args {
   fail_on_regression: bool,
 }
 
+#[derive(Clone)]
+enum FixtureSource {
+  FixtureName(String),
+  ArbitraryPath(PathBuf),
+}
+
+#[derive(Clone)]
+struct FixtureTarget {
+  label: String,
+  source: FixtureSource,
+}
+
+impl FixtureTarget {
+  fn from_fixture_name(name: impl Into<String>) -> Self {
+    let name = name.into();
+    Self {
+      label: name.clone(),
+      source: FixtureSource::FixtureName(name),
+    }
+  }
+
+  fn from_path(path: impl Into<PathBuf>) -> Self {
+    let path = path.into();
+    let label = path
+      .file_name()
+      .and_then(|name| name.to_str())
+      .map(std::string::ToString::to_string)
+      .unwrap_or_else(|| path.display().to_string());
+    Self {
+      label,
+      source: FixtureSource::ArbitraryPath(path),
+    }
+  }
+
+  fn source_path(&self) -> Option<&Path> {
+    match &self.source {
+      FixtureSource::ArbitraryPath(path) => Some(path.as_path()),
+      FixtureSource::FixtureName(_) => None,
+    }
+  }
+
+  fn load_contents(&self) -> String {
+    match &self.source {
+      FixtureSource::FixtureName(name) => load_fixture(name),
+      FixtureSource::ArbitraryPath(path) => load_fixture_from_path(path),
+    }
+  }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct BenchmarkResult {
   fixture: String,
@@ -60,6 +114,12 @@ struct BenchmarkResult {
   min_time_ms: f64,
   max_time_ms: f64,
   std_dev_ms: f64,
+  #[serde(default)]
+  std_error_ms: f64,
+  #[serde(default)]
+  ci_95_lower_ms: f64,
+  #[serde(default)]
+  ci_95_upper_ms: f64,
   runs: usize,
   heap_usage_bytes: Option<usize>,
   virtual_usage_bytes: Option<usize>,
@@ -68,34 +128,75 @@ struct BenchmarkResult {
   mb_per_s: f64,
 }
 
+#[derive(Default)]
+struct StatsSummary {
+  mean: f64,
+  min: f64,
+  max: f64,
+  std_dev: f64,
+  std_error: f64,
+  ci_low: f64,
+  ci_high: f64,
+}
+
 #[allow(clippy::cast_precision_loss)]
-fn calculate_stats(times: &[f64]) -> (f64, f64, f64, f64) {
+fn calculate_stats(times: &[f64]) -> StatsSummary {
+  if times.is_empty() {
+    return StatsSummary::default();
+  }
+
   let mean = times.iter().sum::<f64>() / times.len() as f64;
-  let variance = times.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / times.len() as f64;
-  let std_dev = variance.sqrt();
   let min = times.iter().fold(f64::INFINITY, |a, &b| a.min(b));
   let max = times.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+  let variance = if times.len() > 1 {
+    times.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (times.len() - 1) as f64
+  } else {
+    0.0
+  };
+  let std_dev = variance.sqrt();
+  let std_error = if times.len() > 1 {
+    std_dev / (times.len() as f64).sqrt()
+  } else {
+    0.0
+  };
+  let ci_margin = 1.96 * std_error;
+  let ci_low = (mean - ci_margin).max(0.0);
+  let ci_high = mean + ci_margin;
 
-  (mean, min, max, std_dev)
+  StatsSummary {
+    mean,
+    min,
+    max,
+    std_dev,
+    std_error,
+    ci_low,
+    ci_high,
+  }
 }
 
 fn benchmark_fixture(
-  fixture_name: &str,
+  target: &FixtureTarget,
   warmup: usize,
   runs: usize,
   verbose: bool,
 ) -> BenchmarkResult {
-  let fixture = load_fixture(fixture_name);
+  let fixture = target.load_contents();
   let file_size = fixture.len();
+  let fixture_str = fixture.as_str();
 
-  println!("Benchmarking {fixture_name} ({file_size} bytes)...");
+  println!("Benchmarking {} ({file_size} bytes)...", target.label);
+  if verbose {
+    if let Some(path) = target.source_path() {
+      println!("  Source path: {}", path.display());
+    }
+  }
 
   // Warmup runs
   for i in 0..warmup {
     let start = Instant::now();
-    let result = parse_lockfile(&fixture);
+    let result = parse_lockfile(black_box(fixture_str));
     let duration = start.elapsed();
-    assert!(result.is_ok(), "Should parse {fixture_name} successfully");
+    assert!(result.is_ok(), "Should parse {} successfully", target.label);
 
     if verbose {
       println!(
@@ -109,7 +210,7 @@ fn benchmark_fixture(
 
   // Measure heap usage with a single run
   let before = memory_stats().unwrap();
-  let result = parse_lockfile(&fixture);
+  let result = parse_lockfile(black_box(fixture_str));
   let after = memory_stats().unwrap();
 
   let heap_usage = isize::try_from(after.physical_mem).expect("physical mem too large")
@@ -117,7 +218,7 @@ fn benchmark_fixture(
   let virtual_usage = isize::try_from(after.virtual_mem).expect("virtual mem too large")
     - isize::try_from(before.virtual_mem).expect("virtual mem too large");
 
-  assert!(result.is_ok(), "Should parse {fixture_name} successfully");
+  assert!(result.is_ok(), "Should parse {} successfully", target.label);
 
   if verbose {
     println!("  Heap usage: {heap_usage} bytes (physical), {virtual_usage} bytes (virtual)");
@@ -128,7 +229,7 @@ fn benchmark_fixture(
 
   for i in 0..runs {
     let start = Instant::now();
-    let result = parse_lockfile(&fixture);
+    let result = parse_lockfile(black_box(fixture_str));
     let duration = start.elapsed();
     let time_ms = duration.as_secs_f64() * 1000.0;
     times.push(time_ms);
@@ -137,28 +238,31 @@ fn benchmark_fixture(
       println!("  Run {}: {:.3}ms", i + 1, time_ms);
     }
 
-    assert!(result.is_ok(), "Should parse {fixture_name} successfully");
+    assert!(result.is_ok(), "Should parse {} successfully", target.label);
   }
 
-  let (mean, min, max, std_dev) = calculate_stats(&times);
+  let stats = calculate_stats(&times);
 
   // Derived metrics
   let kib = file_size as f64 / 1024.0;
-  let time_per_kib_ms = if kib > 0.0 { mean / kib } else { 0.0 };
+  let time_per_kib_ms = if kib > 0.0 { stats.mean / kib } else { 0.0 };
   let mb = file_size as f64 / 1_000_000.0;
-  let mb_per_s = if mean > 0.0 {
-    mb / (mean / 1000.0)
+  let mb_per_s = if stats.mean > 0.0 {
+    mb / (stats.mean / 1000.0)
   } else {
     f64::INFINITY
   };
 
   BenchmarkResult {
-    fixture: fixture_name.to_string(),
+    fixture: target.label.clone(),
     file_size,
-    mean_time_ms: mean,
-    min_time_ms: min,
-    max_time_ms: max,
-    std_dev_ms: std_dev,
+    mean_time_ms: stats.mean,
+    min_time_ms: stats.min,
+    max_time_ms: stats.max,
+    std_dev_ms: stats.std_dev,
+    std_error_ms: stats.std_error,
+    ci_95_lower_ms: stats.ci_low,
+    ci_95_upper_ms: stats.ci_high,
     runs,
     heap_usage_bytes: Some(heap_usage.unsigned_abs()),
     virtual_usage_bytes: Some(virtual_usage.unsigned_abs()),
@@ -259,17 +363,19 @@ fn print_results(results: &[BenchmarkResult], format: &str) {
   } else {
     println!("\nBenchmark Results:");
     println!(
-      "{:<28} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12}",
-      "Fixture", "Bytes", "Mean (ms)", "Min (ms)", "Max (ms)", "ms/KiB", "MB/s"
+      "{:<28} {:>12} {:>20} {:>12} {:>12} {:>12} {:>12}",
+      "Fixture", "Bytes", "Mean +/- CI95 (ms)", "Min (ms)", "Max (ms)", "ms/KiB", "MB/s"
     );
-    println!("{:-<104}", "");
+    println!("{:-<120}", "");
 
     for result in results {
+      let ci_margin = (result.ci_95_upper_ms - result.ci_95_lower_ms).abs() / 2.0;
+      let mean_column = format!("{:.3} +/- {:.3}", result.mean_time_ms, ci_margin);
       println!(
-        "{:<28} {:>12} {:>12.3} {:>12.3} {:>12.3} {:>12.3} {:>12.2}",
+        "{:<28} {:>12} {:>20} {:>12.3} {:>12.3} {:>12.3} {:>12.2}",
         result.fixture,
         result.file_size,
-        result.mean_time_ms,
+        mean_column,
         result.min_time_ms,
         result.max_time_ms,
         result.time_per_kib_ms,
@@ -282,23 +388,28 @@ fn print_results(results: &[BenchmarkResult], format: &str) {
 fn main() {
   let args = Args::parse();
 
-  let fixtures = if let Some(fixture) = args.fixture {
-    vec![fixture]
+  let fixtures: Vec<FixtureTarget> = if let Some(path) = args.fixture_path {
+    vec![FixtureTarget::from_path(path)]
+  } else if let Some(fixture) = args.fixture {
+    vec![FixtureTarget::from_fixture_name(fixture)]
   } else if args.all {
     discover_all_fixture_names()
+      .into_iter()
+      .map(FixtureTarget::from_fixture_name)
+      .collect()
   } else {
     // Default to a few key fixtures
     vec![
-      "minimal-berry.lock".to_string(),
-      "workspaces.yarn.lock".to_string(),
-      "auxiliary-packages.yarn.lock".to_string(),
+      FixtureTarget::from_fixture_name("minimal-berry.lock"),
+      FixtureTarget::from_fixture_name("workspaces.yarn.lock"),
+      FixtureTarget::from_fixture_name("auxiliary-packages.yarn.lock"),
     ]
   };
 
   let mut results = Vec::new();
 
-  for fixture in fixtures {
-    let result = benchmark_fixture(&fixture, args.warmup, args.runs, args.verbose);
+  for fixture in &fixtures {
+    let result = benchmark_fixture(fixture, args.warmup, args.runs, args.verbose);
     results.push(result);
   }
 

@@ -1,72 +1,44 @@
 // Types from
 // https://github.com/yarnpkg/berry/blob/master/packages/yarnpkg-core/sources/types.ts#L19
-// TODO - determine if these should be serde[flatten]ed or not
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct IdentName(String);
-
-impl IdentName {
-  pub fn new(name: String) -> Self {
-    Self(name)
-  }
-
-  pub fn as_str(&self) -> &str {
-    &self.0
-  }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct IdentScope(String);
-
-impl IdentScope {
-  pub fn new(scope: String) -> Self {
-    Self(scope)
-  }
-
-  pub fn as_str(&self) -> &str {
-    &self.0
-  }
-}
 
 /// Scope + name of the package, with hash for comparison
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ident {
+/// Uses borrowed strings for zero-copy parsing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ident<'a> {
   /// The scope of the package, e.g. for `@scope/package`, this is `@scope`
-  scope: Option<IdentScope>,
+  scope: Option<&'a str>,
   /// The name of the package, e.g. for `@scope/package`, this is `package`
-  name: IdentName,
+  name: &'a str,
 }
 
-impl Ident {
-  pub fn new(scope: Option<String>, name: String) -> Self {
-    Self {
-      scope: scope.map(IdentScope::new),
-      name: IdentName::new(name),
-    }
+impl<'a> Ident<'a> {
+  /// Create a new Ident from optional scope and name (borrowed)
+  pub const fn new(scope: Option<&'a str>, name: &'a str) -> Self {
+    Self { scope, name }
   }
 
   /// Returns the scope of the package, e.g. for `@scope/package`, this is `@scope`
-  pub fn scope(&self) -> Option<&str> {
-    self.scope.as_ref().map(IdentScope::as_str)
+  pub const fn scope(&self) -> Option<&'a str> {
+    self.scope
   }
 
   /// Returns the name of the package, e.g. for `@scope/package`, this is `package`
-  pub fn name(&self) -> &str {
-    self.name.as_str()
+  pub const fn name(&self) -> &'a str {
+    self.name
   }
 }
 
-/// The range of a descriptor. Stores the raw string and a precomputed
+/// The range of a descriptor. Stores a borrowed string and a precomputed
 /// index of the first colon to allow zero-copy access to protocol and selector.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Range {
-  raw: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Range<'a> {
+  raw: &'a str,
   protocol_sep_index: Option<usize>,
 }
 
-impl Range {
-  /// Create a Range from a raw string like "npm:^1.2.3" or "*".
-  pub fn from_raw(raw: String) -> Self {
+impl<'a> Range<'a> {
+  /// Create a Range from a raw string slice like "npm:^1.2.3" or "*".
+  pub fn from_raw(raw: &'a str) -> Self {
     // Find the first ':' to separate protocol and selector
     let protocol_sep_index = raw.find(':');
     Self {
@@ -76,20 +48,20 @@ impl Range {
   }
 
   /// Returns the raw range string as stored in the lockfile (for round-trip).
-  pub fn raw(&self) -> &str {
-    &self.raw
+  pub const fn raw(&self) -> &'a str {
+    self.raw
   }
 
   /// Returns the protocol substring if present (e.g., "npm", "workspace", "patch").
-  pub fn protocol_str(&self) -> Option<&str> {
+  pub fn protocol_str(&self) -> Option<&'a str> {
     self.protocol_sep_index.map(|i| &self.raw[..i])
   }
 
   /// Returns the selector part (e.g., "^1.2.3", "packages/a", or the full raw when no protocol).
-  pub fn selector(&self) -> &str {
+  pub fn selector(&self) -> &'a str {
     match self.protocol_sep_index {
       Some(i) => &self.raw[i + 1..],
-      None => &self.raw,
+      None => self.raw,
     }
   }
 }
@@ -108,7 +80,7 @@ pub enum Protocol {
   Unknown,
 }
 
-impl Range {
+impl Range<'_> {
   /// Returns a coarse-grained protocol classification without allocations.
   pub fn protocol(&self) -> Protocol {
     match self.protocol_str() {
@@ -206,15 +178,15 @@ impl Range {
 /// Yarn's `parseRange` to turn a descriptor string into this data structure,
 ///`makeDescriptor` to create a new one from an ident and a range, or
 ///`stringifyDescriptor` to generate a string representation of it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Descriptor {
-  ident: Ident,
-  range: Range,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Descriptor<'a> {
+  ident: Ident<'a>,
+  range: Range<'a>,
 }
 
-impl Descriptor {
-  /// Create a new Descriptor from an Ident and a range string
-  pub fn new(ident: Ident, range_raw: String) -> Self {
+impl<'a> Descriptor<'a> {
+  /// Create a new Descriptor from an Ident and a range string (borrowed)
+  pub fn new(ident: Ident<'a>, range_raw: &'a str) -> Self {
     Self {
       ident,
       range: Range::from_raw(range_raw),
@@ -222,17 +194,17 @@ impl Descriptor {
   }
 
   /// Returns the Ident of the Descriptor
-  pub fn ident(&self) -> &Ident {
+  pub const fn ident(&self) -> &Ident<'a> {
     &self.ident
   }
 
   /// Returns the raw range string of the Descriptor
-  pub fn range(&self) -> &str {
+  pub const fn range(&self) -> &'a str {
     self.range.raw()
   }
 
   /// Returns the structured range of the Descriptor
-  pub fn range_struct(&self) -> &Range {
+  pub const fn range_struct(&self) -> &Range<'a> {
     &self.range
   }
 }
@@ -243,7 +215,7 @@ mod tests {
 
   #[test]
   fn test_range_no_protocol() {
-    let r = Range::from_raw("*".to_string());
+    let r = Range::from_raw("*");
     assert_eq!(r.raw(), "*");
     assert_eq!(r.protocol_str(), None);
     assert_eq!(r.selector(), "*");
@@ -251,7 +223,7 @@ mod tests {
 
   #[test]
   fn test_range_with_npm_protocol() {
-    let r = Range::from_raw("npm:^2.0.0".to_string());
+    let r = Range::from_raw("npm:^2.0.0");
     assert_eq!(r.raw(), "npm:^2.0.0");
     assert_eq!(r.protocol_str(), Some("npm"));
     assert_eq!(r.selector(), "^2.0.0");
@@ -260,8 +232,8 @@ mod tests {
 
   #[test]
   fn test_range_with_patch_protocol() {
-    let raw = "patch:is-odd@npm%3A3.0.1#~/.yarn/patches/x.patch".to_string();
-    let r = Range::from_raw(raw.clone());
+    let raw = "patch:is-odd@npm%3A3.0.1#~/.yarn/patches/x.patch";
+    let r = Range::from_raw(raw);
     assert_eq!(r.raw(), raw);
     assert_eq!(r.protocol_str(), Some("patch"));
     assert!(r.selector().starts_with("is-odd@npm%3A3.0.1#"));
@@ -270,7 +242,7 @@ mod tests {
 
   #[test]
   fn test_range_with_link_protocol() {
-    let r = Range::from_raw("link:./packages/a".to_string());
+    let r = Range::from_raw("link:./packages/a");
     assert_eq!(r.protocol_str(), Some("link"));
     assert_eq!(r.selector(), "./packages/a");
     assert_eq!(r.protocol(), Protocol::Link);
@@ -278,7 +250,7 @@ mod tests {
 
   #[test]
   fn test_range_with_git_protocol() {
-    let r = Range::from_raw("git+ssh://host/repo.git#v1".to_string());
+    let r = Range::from_raw("git+ssh://host/repo.git#v1");
     assert_eq!(r.protocol_str(), Some("git+ssh"));
     assert_eq!(r.protocol(), Protocol::Git);
     let (url, frag) = r.as_git_url_and_fragment().unwrap();
@@ -288,27 +260,25 @@ mod tests {
 
   #[test]
   fn test_range_protocol_specific_accessors() {
-    let npm = Range::from_raw("npm:^1.2.3".to_string());
+    let npm = Range::from_raw("npm:^1.2.3");
     assert_eq!(npm.as_npm_range(), Some("^1.2.3"));
 
-    let ws = Range::from_raw("workspace:packages/a".to_string());
+    let ws = Range::from_raw("workspace:packages/a");
     assert_eq!(ws.as_workspace_path(), Some("packages/a"));
 
-    let link = Range::from_raw("link:./local".to_string());
+    let link = Range::from_raw("link:./local");
     assert_eq!(link.as_link_path(), Some("./local"));
 
-    let file = Range::from_raw("file:../tarballs/pkg.tgz".to_string());
+    let file = Range::from_raw("file:../tarballs/pkg.tgz");
     assert_eq!(file.as_file_path(), Some("../tarballs/pkg.tgz"));
 
-    let portal = Range::from_raw("portal:./inner".to_string());
+    let portal = Range::from_raw("portal:./inner");
     assert_eq!(portal.as_portal_path(), Some("./inner"));
 
-    let exec = Range::from_raw("exec:node ./script.js".to_string());
+    let exec = Range::from_raw("exec:node ./script.js");
     assert_eq!(exec.as_exec_command(), Some("node ./script.js"));
 
-    let patch = Range::from_raw(
-      "patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1.patch".to_string(),
-    );
+    let patch = Range::from_raw("patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1.patch");
     let (inner, src) = patch.as_patch_inner_and_source().unwrap();
     assert!(inner.starts_with("is-odd@npm%3A3.0.1"));
     assert!(src.unwrap().starts_with("~/.yarn/patches/"));

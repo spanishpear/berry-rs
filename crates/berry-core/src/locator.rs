@@ -9,26 +9,26 @@ use crate::ident::Ident;
 // This interesting property means that each locator can be safely turned into
 // a descriptor - but not the other way
 // around (except in very specific cases).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Locator {
-  ident: Ident,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Locator<'a> {
+  ident: Ident<'a>,
   /// A package reference uniquely identifies a package (eg. `1.2.3`).
-  reference: String,
+  reference: &'a str,
 }
 
-impl Locator {
-  /// Create a new Locator from an Ident and a reference
-  pub fn new(ident: Ident, reference: String) -> Self {
+impl<'a> Locator<'a> {
+  /// Create a new Locator from an Ident and a reference (borrowed)
+  pub const fn new(ident: Ident<'a>, reference: &'a str) -> Self {
     Self { ident, reference }
   }
 
   /// Returns the Ident of the Locator (e.g. `@scope/package`)
-  pub fn ident(&self) -> &Ident {
+  pub const fn ident(&self) -> &Ident<'a> {
     &self.ident
   }
 
   /// Returns the reference of the Locator (e.g. `1.2.3`)
-  pub fn reference(&self) -> &str {
-    &self.reference
+  pub const fn reference(&self) -> &'a str {
+    self.reference
   }
 }

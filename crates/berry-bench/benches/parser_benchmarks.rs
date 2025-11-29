@@ -1,15 +1,52 @@
 use berry::parse::parse_lockfile;
 use berry_test::load_fixture;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
 use memory_stats::memory_stats;
 use std::fs;
 use std::hint::black_box;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const FAST_SAMPLE_SIZE: usize = 60;
+const SLOW_SAMPLE_SIZE: usize = 30;
+const FAST_MEASUREMENT_TIME: Duration = Duration::from_secs(1);
+const SLOW_MEASUREMENT_TIME: Duration = Duration::from_secs(3);
+const WARM_UP_TIME: Duration = Duration::from_millis(500);
+const NOISE_THRESHOLD: f64 = 0.02;
+
+#[derive(Copy, Clone)]
+enum BenchmarkKind {
+  Fast,
+  Slow,
+}
+
+fn configure_group(
+  group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+  kind: BenchmarkKind,
+) {
+  group
+    .warm_up_time(WARM_UP_TIME)
+    .noise_threshold(NOISE_THRESHOLD)
+    .sampling_mode(SamplingMode::Flat);
+
+  match kind {
+    BenchmarkKind::Fast => {
+      group
+        .sample_size(FAST_SAMPLE_SIZE)
+        .measurement_time(FAST_MEASUREMENT_TIME);
+    }
+    BenchmarkKind::Slow => {
+      group
+        .sample_size(SLOW_SAMPLE_SIZE)
+        .measurement_time(SLOW_MEASUREMENT_TIME);
+    }
+  }
+}
 
 /// Benchmark parsing with different fixture sizes
 fn benchmark_fixtures(c: &mut Criterion) {
   let mut group = c.benchmark_group("fixture_parsing");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   // Small fixture benchmark
   group.bench_function("minimal_berry", |b| {
@@ -79,6 +116,7 @@ fn benchmark_fixtures(c: &mut Criterion) {
 /// Benchmark parsing speed vs file size
 fn benchmark_parsing_speed_vs_size(c: &mut Criterion) {
   let mut group = c.benchmark_group("parsing_speed_vs_size");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   let fixtures = vec![
     ("minimal-berry.lock", "small"),
@@ -108,6 +146,7 @@ fn benchmark_parsing_speed_vs_size(c: &mut Criterion) {
 /// Benchmark memory usage during parsing
 fn benchmark_memory_usage(c: &mut Criterion) {
   let mut group = c.benchmark_group("memory_usage");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   // Test with different fixture sizes to see memory scaling
   let fixtures = vec![
@@ -148,6 +187,7 @@ fn benchmark_memory_usage(c: &mut Criterion) {
 /// Benchmark zero-allocation claims
 fn benchmark_zero_allocation(c: &mut Criterion) {
   let mut group = c.benchmark_group("zero_allocation");
+  configure_group(&mut group, BenchmarkKind::Fast);
 
   let fixture = load_fixture("minimal-berry.lock");
 
@@ -174,6 +214,7 @@ fn benchmark_zero_allocation(c: &mut Criterion) {
 /// Benchmark heap usage after parsing
 fn benchmark_heap_usage(c: &mut Criterion) {
   let mut group = c.benchmark_group("heap_usage");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   let fixtures = vec![
     ("minimal-berry.lock", "small"),
@@ -224,6 +265,7 @@ fn benchmark_heap_usage(c: &mut Criterion) {
 /// Benchmark individual parsing functions
 fn benchmark_individual_functions(c: &mut Criterion) {
   let mut group = c.benchmark_group("individual_functions");
+  configure_group(&mut group, BenchmarkKind::Fast);
 
   // Test parse_lockfile function specifically
   let fixture = load_fixture("minimal-berry.lock");
@@ -242,6 +284,7 @@ fn benchmark_individual_functions(c: &mut Criterion) {
 /// Benchmark parsing with different input characteristics
 fn benchmark_input_characteristics(c: &mut Criterion) {
   let mut group = c.benchmark_group("input_characteristics");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   // Test with fixtures that have different characteristics
   let fixtures = vec![
@@ -269,6 +312,7 @@ fn benchmark_input_characteristics(c: &mut Criterion) {
 /// Benchmark all fixtures discovered in the fixtures directory
 fn benchmark_all_fixtures(c: &mut Criterion) {
   let mut group = c.benchmark_group("all_fixtures");
+  configure_group(&mut group, BenchmarkKind::Slow);
 
   // Discover fixtures directory relative to this crate
   let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))

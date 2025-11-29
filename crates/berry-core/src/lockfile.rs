@@ -8,31 +8,33 @@ use nom::{
   multi::fold_many0,
   sequence::{pair, preceded, separated_pair, terminated},
 };
+use smallvec::SmallVec;
 
 /// A serialized representation of a yarn lockfile.
+/// Uses borrowed strings for zero-copy parsing.
 #[derive(Debug)]
-pub struct Lockfile {
+pub struct Lockfile<'a> {
   /// Lockfile version and cache key
-  pub metadata: Metadata,
+  pub metadata: Metadata<'a>,
   /// The entries in the lockfile
-  pub entries: Vec<Entry>,
+  pub entries: Vec<Entry<'a>>,
   /// Optional resolutions section (key -> value)
-  pub resolutions: Option<Vec<(String, String)>>,
+  pub resolutions: Option<Vec<(&'a str, &'a str)>>,
   /// Optional constraints section (key -> value)
-  pub constraints: Option<Vec<(String, String)>>,
+  pub constraints: Option<Vec<(&'a str, &'a str)>>,
 }
 
 /// A single lockfile entry is a mapping of one or more descriptors to a single package
 #[derive(Debug)]
-pub struct Entry {
-  /// The descriptors of the entry
-  pub descriptors: Vec<Descriptor>,
+pub struct Entry<'a> {
+  /// The descriptors of the entry (using SmallVec for stack allocation in common case)
+  pub descriptors: SmallVec<[Descriptor<'a>; 4]>,
   /// The package of the entry
-  pub package: Package,
+  pub package: Package<'a>,
 }
 
-impl Entry {
-  pub fn new(descriptors: Vec<Descriptor>, package: Package) -> Self {
+impl<'a> Entry<'a> {
+  pub fn new(descriptors: SmallVec<[Descriptor<'a>; 4]>, package: Package<'a>) -> Self {
     Self {
       descriptors,
       package,
@@ -45,7 +47,7 @@ impl Entry {
 ///
 /// # Examples
 ///
-/// ```
+/// ```text
 /// __metadata:
 ///   version: 8
 ///   cacheKey: 9
@@ -53,22 +55,23 @@ impl Entry {
 ///
 /// will often be represented as:
 ///
-/// ```
+/// ```text
 /// Metadata {
 ///   version: "8",
 ///   cache_key: "9",
 /// }
+/// ```
 #[derive(Debug)]
-pub struct Metadata {
+pub struct Metadata<'a> {
   /// The version of the lockfile
-  pub version: String,
+  pub version: &'a str,
   /// The cache key of the lockfile
-  pub cache_key: String,
+  pub cache_key: &'a str,
 }
 
-impl Metadata {
-  /// Create a new Metadata from a version and a cache key
-  pub fn new(version: String, cache_key: String) -> Self {
+impl<'a> Metadata<'a> {
+  /// Create a new Metadata from a version and a cache key (borrowed)
+  pub const fn new(version: &'a str, cache_key: &'a str) -> Self {
     Self { version, cache_key }
   }
 }
@@ -94,25 +97,21 @@ pub(crate) fn parse_metadata_line(input: &str) -> IResult<&str, (&str, &str)> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```text
 /// __metadata:
 ///   version: 8
 ///   cacheKey: 9
 /// ```
-pub(crate) fn parse_metadata(input: &str) -> IResult<&str, Metadata> {
+pub(crate) fn parse_metadata(input: &str) -> IResult<&str, Metadata<'_>> {
   let (rest, _) = terminated(tag("__metadata:"), newline).parse(input)?;
   let (rest, version_line) = parse_metadata_line(rest)?;
   let (rest, cache_key_line) = parse_metadata_line(rest)?;
 
-  // todo(shrey): consider a more robust way to do this
-  // where we dont rely on the ordering
+  // Trim quotes from values (returns slices into the input)
   let version = version_line.1.trim_matches('"');
   let cache_key = cache_key_line.1.trim_matches('"');
 
-  Ok((
-    rest,
-    Metadata::new(version.to_string(), cache_key.to_string()),
-  ))
+  Ok((rest, Metadata::new(version, cache_key)))
 }
 
 // NOTE: A faster approach **could** be to just consume three lines, and not even use nom
@@ -173,27 +172,26 @@ fn parse_top_level_kv_block<'a>(
   }
 }
 
-pub(crate) fn parse_resolutions(input: &str) -> IResult<&str, Vec<(String, String)>> {
+/// Parse resolutions block, returning borrowed strings
+pub(crate) fn parse_resolutions(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
   let (rest, entries) = parse_top_level_kv_block("resolutions:")(input)?;
-  let owned = entries
+  // Trim quotes but keep as borrowed slices
+  let trimmed: Vec<(&str, &str)> = entries
     .into_iter()
-    .map(|(k, v)| {
-      (
-        k.trim_matches('"').trim().to_string(),
-        v.trim_matches('"').to_string(),
-      )
-    })
+    .map(|(k, v)| (k.trim_matches('"').trim(), v.trim_matches('"')))
     .collect();
-  Ok((rest, owned))
+  Ok((rest, trimmed))
 }
 
-pub(crate) fn parse_constraints(input: &str) -> IResult<&str, Vec<(String, String)>> {
+/// Parse constraints block, returning borrowed strings
+pub(crate) fn parse_constraints(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
   let (rest, entries) = parse_top_level_kv_block("constraints:")(input)?;
-  let owned = entries
+  // Trim but keep as borrowed slices
+  let trimmed: Vec<(&str, &str)> = entries
     .into_iter()
-    .map(|(k, v)| (k.trim().to_string(), v.trim_matches('"').to_string()))
+    .map(|(k, v)| (k.trim(), v.trim_matches('"')))
     .collect();
-  Ok((rest, owned))
+  Ok((rest, trimmed))
 }
 
 #[cfg(test)]

@@ -31,6 +31,14 @@ cargo run --bin berry-bench-bin -- --all -r 10 --baseline .bench/baseline.json -
 cargo bench --package berry-bench --bench parser_benchmarks -- --quick
 ```
 
+#### Baselines & named Criterion benchmarks
+
+- **Record or update a baseline:** `cargo bench --package berry-bench --bench parser_benchmarks -- --save-baseline main`. This writes fresh results under `target/criterion/**/base` for the `main` label.
+- **Compare against the baseline:** rerun the benchmark with `--baseline main`; Criterion will print deltas, p-values, and CI ranges, flagging statistically significant regressions or improvements. Add `--save-baseline main` too if you want to refresh the stored baseline after comparison.
+- **Focus on a single benchmark:** append the benchmark ID, e.g. `cargo bench --bench parser_benchmarks fixture_parsing/minimal_berry`. Any substring filter works (`heap_usage`, `input_characteristics`), and you can still combine it with `--baseline`.
+
+**Which tool to use?** Reach for `berry-bench-bin` when you want a fast, human-friendly gut check (single fixtures, ad-hoc lockfiles via `--fixture-path`, baseline comparisons) while iterating locally. Swap to the Criterion suite whenever you need statistically rigorous evidence—e.g., validating parser changes before merging, capturing p-values/CI ranges, or producing reports that will influence performance gates in CI.
+
 ## Benchmark Categories
 
 ### Fixture Parsing
