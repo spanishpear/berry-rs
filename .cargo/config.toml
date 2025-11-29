@@ -1,3 +1,10 @@
 [target.aarch64-unknown-linux-musl]
 linker = "aarch64-linux-musl-gcc"
-rustflags = ["-C", "target-feature=-crt-static"]
+# target-cpu=native for our benchmarking
+# force-frame-pointers=yes for our benchmarking
+rustflags = [
+  "-C",
+  "target-feature=-crt-static",
+  "-Ctarget-cpu=native",
+  "-Cforce-frame-pointers=yes",
+]

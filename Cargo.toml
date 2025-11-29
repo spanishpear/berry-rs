@@ -7,37 +7,29 @@ resolver = "2"
   categories  = ["parsing", "parser-implementations"]
   description = "A simple yarn berry lockfile parser"
   edition     = "2024"
+  license     = "MIT OR Apache-2.0"
+  repository  = "https://github.com/spanishpear/berry"
   version     = "0.4.1"
-  # keywords = [
-  #   "yarn",
-  #   "berry",
-  #   "lockfile",
-  #   "parser",
-  #   "utils",
-  #   "nodejs",
-  #   "napi",
-  #   "n-api",
-  # ]
-  license    = "MIT OR Apache-2.0"
-  repository = "https://github.com/spanishpear/berry"
 
   [workspace.dependencies]
   berry      = { path = "crates/berry-core" }
   berry-test = { path = "crates/berry-test" }
   # https://nodejs.org/api/n-api.html#node-api-version-matrix
   # support node 18-22
-  clap = { version = "4.5.45", features = ["derive"] }
+  clap = { version = "4.5.53", features = ["derive"] }
   criterion = { version = "0.7", features = ["html_reports"] }
+  memmap2 = { version = "0.9.9" }
   memory-stats = { version = "1.2.0" }
-  napi = { version = "3.2.4", default-features = false, features = ["napi9"] }
-  napi-build = { version = "2.2.3" }
-  napi-derive = { version = "3.2.4", default-features = false, features = [
+  napi = { version = "3.5.2", default-features = false, features = ["napi9"] }
+  napi-build = { version = "2.3.1" }
+  napi-derive = { version = "3.3.3", default-features = false, features = [
     "type-def",
   ] }
   nom = { version = "8.0.0" }
   rstest = { version = "0.26" }
   serde = { version = "1.0", features = ["derive"] }
   serde_json = { version = "1.0" }
+  thiserror = { version = "2.0.17" }
 
   # https://doc.rust-lang.org/rustc/lints/groups.html
   [workspace.lints.rust]
