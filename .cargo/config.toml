@@ -8,3 +8,6 @@ rustflags = [
   "-Ctarget-cpu=native",
   "-Cforce-frame-pointers=yes",
 ]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-Ctarget-cpu=native", "-Cforce-frame-pointers=yes"]

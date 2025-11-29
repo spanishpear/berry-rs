@@ -2,10 +2,10 @@ use nom::IResult;
 use nom::{
   Parser,
   branch::alt,
-  bytes::complete::{is_not, tag, take_until, take_while1},
+  bytes::complete::{is_not, tag, take_until, take_while, take_while1},
   character::complete::{char, newline, space0, space1},
   combinator::{map, opt, recognize},
-  multi::{fold_many0, many0},
+  multi::fold_many0,
   sequence::{delimited, preceded, terminated},
 };
 
@@ -45,18 +45,18 @@ pub fn parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile> {
   };
 
   // Parse all package entries as full Entries
-  let (rest, entries) = many0(parse_entry).parse(rest)?;
+  // Use fold_many0 to avoid intermediate Vec allocation from many0
+  let (rest, entries) = fold_many0(parse_entry, Vec::new, |mut entries, entry| {
+    entries.push(entry);
+    entries
+  })
+  .parse(rest)?;
 
   // Consume any trailing content (backticks, semicolons, whitespace, etc.)
-  let (rest, _) = many0(alt((
-    tag("`"),
-    tag(";"),
-    tag("\n"),
-    tag(" "),
-    tag("\t"),
-    tag("\r"),
-  )))
-  .parse(rest)?;
+  // perf: use take_while instead of many0 - zero allocation
+  let (rest, _) =
+    take_while(|c: char| c == '`' || c == ';' || c == '\n' || c == ' ' || c == '\t' || c == '\r')
+      .parse(rest)?;
 
   Ok((
     rest,
@@ -109,14 +109,14 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, Vec<Descriptor>> {
         terminated(char('"'), preceded(newline, char(':'))),
       ),
       delimited(char('"'), take_until("\":"), tag("\":")), // Quoted: "package@npm:version":
-      terminated(take_until(":"), char(':')), // Unquoted: package@latest:
+      terminated(take_until(":"), char(':')),              // Unquoted: package@latest:
     ))
     .parse(rest)?
   } else {
     // For normal descriptors, skip the newline-wrapped check entirely (performance optimisation)
     alt((
       delimited(char('"'), take_until("\":"), tag("\":")), // Quoted: "package@npm:version":
-      terminated(take_until(":"), char(':')), // Unquoted: package@latest:
+      terminated(take_until(":"), char(':')),              // Unquoted: package@latest:
     ))
     .parse(rest)?
   };
@@ -270,95 +270,103 @@ fn parse_patch_range(input: &str) -> IResult<&str, &str> {
 }
 
 /// Parse indented key-value properties for a package
+/// perf: use `fold_many0` to build the Package directly without intermediate Vec allocation
 pub fn parse_package_properties(input: &str) -> IResult<&str, Package> {
-  let (rest, properties) = many0(parse_property_line).parse(input)?;
+  // Build package directly using fold_many0 - no intermediate Vec allocation
+  let (rest, package) = fold_many0(
+    parse_property_line,
+    || Package::new("unknown".to_string(), LinkType::Hard),
+    |mut package, property_value| {
+      match property_value {
+        PropertyValue::Simple(key, value) => match key {
+          "version" => {
+            package.version = Some(value.trim_matches('"').to_string());
+          }
+          "resolution" => {
+            let raw = value.trim_matches('"').to_string();
+            // Best-effort parse of the resolution into a Locator: split on '@' first occurrence
+            // Examples: "debug@npm:1.0.0", "a@workspace:packages/a"
+            if let Some(at_index) = raw.find('@') {
+              let (name_part, reference) = raw.split_at(at_index);
+              let ident = parse_name_to_ident(name_part);
+              // split_at keeps the '@' on the right; remove it
+              let reference = reference.trim_start_matches('@').to_string();
+              package.resolution_locator = Some(Locator::new(ident, reference));
+            }
+            package.resolution = Some(raw);
+          }
+          "languageName" => {
+            package.language_name = crate::package::LanguageName::new(value.to_string());
+          }
+          "linkType" => {
+            package.link_type =
+              LinkType::try_from(value).unwrap_or_else(|()| panic!("Invalid link type: {value}"));
+          }
+          "checksum" => {
+            package.checksum = Some(value.to_string());
+          }
+          "conditions" => {
+            package.conditions = Some(value.to_string());
+          }
+          _ => {
+            panic!("Unknown property encountered in package entry: {key}");
+          }
+        },
+        PropertyValue::Dependencies(dependencies) => {
+          // Store the parsed dependencies in the package
+          for (dep_name, dep_range) in dependencies {
+            let ident = parse_dependency_name_to_ident(dep_name);
+            let descriptor = Descriptor::new(ident, dep_range.to_string());
+            package
+              .dependencies
+              .insert(descriptor.ident().clone(), descriptor);
+          }
+        }
+        PropertyValue::PeerDependencies(peer_dependencies) => {
+          // Store the parsed peer dependencies in the package
+          for (dep_name, dep_range) in peer_dependencies {
+            let ident = parse_dependency_name_to_ident(dep_name);
+            let descriptor = Descriptor::new(ident, dep_range.to_string());
+            package
+              .peer_dependencies
+              .insert(descriptor.ident().clone(), descriptor);
+          }
+        }
+        PropertyValue::Bin(binaries) => {
+          // Store the parsed binary executables in the package
+          for (bin_name, bin_path) in binaries {
+            package
+              .bin
+              .insert(bin_name.to_string(), bin_path.to_string());
+          }
+        }
+        PropertyValue::DependenciesMeta(meta) => {
+          // Store the parsed dependency metadata in the package
+          for (dep_name, dep_meta) in meta {
+            let ident = parse_dependency_name_to_ident(dep_name);
+            package.dependencies_meta.insert(ident, Some(dep_meta));
+          }
+        }
+        PropertyValue::PeerDependenciesMeta(meta) => {
+          // Store the parsed peer dependency metadata in the package
+          for (dep_name, dep_meta) in meta {
+            let ident = parse_dependency_name_to_ident(dep_name);
+            package.peer_dependencies_meta.insert(ident, dep_meta);
+          }
+        }
+      }
+      package
+    },
+  )
+  .parse(input)?;
 
   // Consume any trailing whitespace and blank lines
-  let (rest, _) = many0(alt((tag("\n"), tag(" "), tag("\t"), tag("\r")))).parse(rest)?;
-
-  // Build the package from the parsed properties
-  let mut package = Package::new("unknown".to_string(), LinkType::Hard);
-
-  for property_value in properties {
-    match property_value {
-      PropertyValue::Simple(key, value) => match key {
-        "version" => {
-          package.version = Some(value.trim_matches('"').to_string());
-        }
-        "resolution" => {
-          let raw = value.trim_matches('"').to_string();
-          // Best-effort parse of the resolution into a Locator: split on '@' first occurrence
-          // Examples: "debug@npm:1.0.0", "a@workspace:packages/a"
-          if let Some(at_index) = raw.find('@') {
-            let (name_part, reference) = raw.split_at(at_index);
-            let ident = parse_name_to_ident(name_part);
-            // split_at keeps the '@' on the right; remove it
-            let reference = reference.trim_start_matches('@').to_string();
-            package.resolution_locator = Some(Locator::new(ident, reference));
-          }
-          package.resolution = Some(raw);
-        }
-        "languageName" => {
-          package.language_name = crate::package::LanguageName::new(value.to_string());
-        }
-        "linkType" => {
-          package.link_type =
-            LinkType::try_from(value).unwrap_or_else(|()| panic!("Invalid link type: {value}"));
-        }
-        "checksum" => {
-          package.checksum = Some(value.to_string());
-        }
-        "conditions" => {
-          package.conditions = Some(value.to_string());
-        }
-        _ => {
-          panic!("Unknown property encountered in package entry: {key}");
-        }
-      },
-      PropertyValue::Dependencies(dependencies) => {
-        // Store the parsed dependencies in the package
-        for (dep_name, dep_range) in dependencies {
-          let ident = parse_dependency_name_to_ident(dep_name);
-          let descriptor = Descriptor::new(ident, dep_range.to_string());
-          package
-            .dependencies
-            .insert(descriptor.ident().clone(), descriptor);
-        }
-      }
-      PropertyValue::PeerDependencies(peer_dependencies) => {
-        // Store the parsed peer dependencies in the package
-        for (dep_name, dep_range) in peer_dependencies {
-          let ident = parse_dependency_name_to_ident(dep_name);
-          let descriptor = Descriptor::new(ident, dep_range.to_string());
-          package
-            .peer_dependencies
-            .insert(descriptor.ident().clone(), descriptor);
-        }
-      }
-      PropertyValue::Bin(binaries) => {
-        // Store the parsed binary executables in the package
-        for (bin_name, bin_path) in binaries {
-          package
-            .bin
-            .insert(bin_name.to_string(), bin_path.to_string());
-        }
-      }
-      PropertyValue::DependenciesMeta(meta) => {
-        // Store the parsed dependency metadata in the package
-        for (dep_name, dep_meta) in meta {
-          let ident = parse_dependency_name_to_ident(dep_name);
-          package.dependencies_meta.insert(ident, Some(dep_meta));
-        }
-      }
-      PropertyValue::PeerDependenciesMeta(meta) => {
-        // Store the parsed peer dependency metadata in the package
-        for (dep_name, dep_meta) in meta {
-          let ident = parse_dependency_name_to_ident(dep_name);
-          package.peer_dependencies_meta.insert(ident, dep_meta);
-        }
-      }
-    }
-  }
+  let (rest, _) = fold_many0(
+    alt((tag("\n"), tag(" "), tag("\t"), tag("\r"))),
+    || (),
+    |(), _| (),
+  )
+  .parse(rest)?;
 
   Ok((rest, package))
 }

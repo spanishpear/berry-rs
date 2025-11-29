@@ -241,6 +241,7 @@ yarn4-patch.lock: 0 bytes heap usage
 - Use `fold_many0` instead of `many0`
 - Defer allocation until final data structures
 - Parse everything in one pass
+- avoid the `alloc` feature of nom
 
 ### Adding New Fixtures
 
@@ -274,15 +275,62 @@ diff baseline-results.json current-results.json
 # Debug parsing issues
 RUST_LOG=debug cargo test
 
-# Profile with flamegraph
-cargo install flamegraph
-cargo flamegraph --bench parser_benchmarks
-
 # Memory profiling
 cargo run --bin berry-bench-bin -- -f large-fixture.lock -v
 
 # Detailed Criterion analysis
 cargo bench --package berry-bench --bench parser_benchmarks -- --verbose
+```
+
+## Profiling
+
+Use `perf` or `samply` to generate flamegraphs and find optimization opportunities.
+
+The project is configured with:
+
+- Frame pointers enabled (`.cargo/config.toml`)
+- A dedicated `profiling` profile with debug symbols (`Cargo.toml`)
+
+Use `--profile profiling` instead of `--release` to get readable symbols.
+
+### Using samply (Recommended)
+
+samply produces interactive flamegraphs in Firefox Profiler:
+
+```bash
+# Build with profiling profile (release + debug symbols)
+cargo build --profile profiling --bin berry-bench-bin
+
+# Profile in browser
+samply record ./target/profiling/berry-bench-bin -f resolutions-patches.yarn.lock -r 100
+```
+
+### Profiling Large Lockfiles
+
+For profiling with large lockfiles (10MB+), place your lockfile in `fixtures/` and run:
+
+```bash
+# Build with profiling profile
+cargo build --profile profiling --bin berry-bench-bin
+
+# Profile with samply
+samply record ./target/profiling/berry-bench-bin -f your-large-file.lock -r 50
+```
+
+### Using perf (Alternative)
+
+TODO - show dropped CPU cycles from jgenset 1bi
+
+```bash
+# Build with profiling profile (sort of the same as release but we use it for some extra cargo settings)
+cargo build --profile profiling --bin berry-bench-bin
+
+# Record profile
+perf record -g --call-graph dwarf \
+  ./target/profiling/berry-bench-bin -f resolutions-patches.yarn.lock -r 100
+
+# View report
+perf report
 ```
 
 ## Related

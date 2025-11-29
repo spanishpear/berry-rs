@@ -133,3 +133,5 @@ npm/
 # local
 **local-notes.md
 .cursor
+
+profile.json.gz

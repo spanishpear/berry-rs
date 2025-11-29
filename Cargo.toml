@@ -63,5 +63,12 @@ resolver = "2"
 
 [profile.release]
 codegen-units = 1
-lto           = true
+lto           = "fat"
+panic         = "abort"   # we don't care about panic machinery
 strip         = "symbols"
+
+# Profiling profile: release optimizations + debug symbols for samply/perf
+[profile.profiling]
+debug    = true
+inherits = "release"
+strip    = "none"
