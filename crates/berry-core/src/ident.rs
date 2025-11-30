@@ -52,17 +52,14 @@ impl<'a> Range<'a> {
     self.raw
   }
 
-  /// Returns the protocol substring if present (e.g., "npm", "workspace", "patch").
+  /// Returns the protocol substring if present (e.g., `"npm"`, `"workspace"`, `"patch"`).
   pub fn protocol_str(&self) -> Option<&'a str> {
     self.protocol_sep_index.map(|i| &self.raw[..i])
   }
 
   /// Returns the selector part (e.g., "^1.2.3", "packages/a", or the full raw when no protocol).
   pub fn selector(&self) -> &'a str {
-    match self.protocol_sep_index {
-      Some(i) => &self.raw[i + 1..],
-      None => self.raw,
-    }
+    self.protocol_sep_index.map_or(self.raw, |i| &self.raw[i + 1..])
   }
 }
 

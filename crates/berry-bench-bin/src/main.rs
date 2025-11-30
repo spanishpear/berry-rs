@@ -83,8 +83,7 @@ impl FixtureTarget {
     let label = path
       .file_name()
       .and_then(|name| name.to_str())
-      .map(std::string::ToString::to_string)
-      .unwrap_or_else(|| path.display().to_string());
+      .map_or_else(|| path.display().to_string(), std::string::ToString::to_string);
     Self {
       label,
       source: FixtureSource::ArbitraryPath(path),
@@ -185,10 +184,8 @@ fn benchmark_fixture(
   let fixture_str = fixture.as_str();
 
   println!("Benchmarking {} ({file_size} bytes)...", target.label);
-  if verbose {
-    if let Some(path) = target.source_path() {
-      println!("  Source path: {}", path.display());
-    }
+  if verbose && let Some(path) = target.source_path() {
+    println!("  Source path: {}", path.display());
   }
 
   // Warmup runs

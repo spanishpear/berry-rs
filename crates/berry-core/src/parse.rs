@@ -2,13 +2,15 @@ use nom::IResult;
 use nom::{
   Parser,
   branch::alt,
-  bytes::complete::{is_not, tag, take_until, take_while, take_while1},
+  bytes::complete::{tag, take_until, take_while, take_while1},
   character::complete::{char, newline, space0, space1},
   combinator::{map, opt, recognize},
   multi::fold_many0,
   sequence::{delimited, preceded, terminated},
 };
 use smallvec::SmallVec;
+use memchr::memchr;
+use rustc_hash::FxHashMap;
 
 use crate::ident::{Descriptor, Ident};
 use crate::locator::Locator;
@@ -95,7 +97,7 @@ pub fn parse_package_entry(
 }
 
 /// Parse a package descriptor line like: "debug@npm:1.0.0":, eslint-config-turbo@latest:, or ? "conditional@npm:1.0.0":
-/// Uses SmallVec<[Descriptor; 4]> since most descriptor lines have 1-3 descriptors
+/// Uses `SmallVec`<[Descriptor; 4]> since most descriptor lines have 1-3 descriptors
 pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<'_>; 4]>> {
   // Check for optional '? ' prefix for wrapped-line descriptors
   let (rest, has_line_wrap_marker) = opt(tag("? ")).parse(input)?;
@@ -165,7 +167,7 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
 /// All strings remain borrowed from the input - zero allocation!
 #[inline]
 fn convert_to_descriptor<'a>(
-  (name_part, protocol, range): (&'a str, &'a str, &'a str),
+  (name_part, _protocol, range): (&'a str, &'a str, &'a str),
 ) -> Descriptor<'a> {
   let ident = parse_name_to_ident(name_part);
   // For the range, we need to find or construct the full range string
@@ -191,35 +193,14 @@ fn convert_to_descriptor<'a>(
   // For true zero-copy, we'd need to restructure to keep the original range string
   // For now, let's construct it - this is ONE allocation per descriptor
   // Still much better than before
-  let full_range = if protocol.is_empty() {
-    range
-  } else {
-    // We need to find the original range in the input
-    // This is tricky - for now fall back to looking at the original
-    // The name_part ends where @ is, then protocol:range follows
-    // But we don't have access to the original here
-    //
-    // Actually we can reconstruct from the input the parse_single_descriptor receives
-    // But we don't have it here either
-    //
-    // For now: use a workaround - the range includes protocol:selector in the original
-    // Let's look at parse_single_descriptor more carefully...
-    // It returns protocol and range separately after parsing
-    // But the original string has them together!
-    //
-    // We need to change parse_single_descriptor to return the full range
-    // For now, let's return just the range part and reconstruct
-    // This means we'll need ONE allocation still for protocol:range case
-    //
-    // TODO: Optimize this to avoid allocation by returning full range slice
-    range // For now, just use the selector part; we'll fix this
-  };
-  Descriptor::new(ident, full_range)
+  // TODO: Optimize this to avoid allocation by returning full range slice from parse_single_descriptor
+  // For now, use the range part (which is typically just the selector)
+  Descriptor::new(ident, range)
 }
 
-/// Parse a single descriptor string like "debug@npm:1.0.0", "c@*", or "is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"
+/// Parse a single descriptor string like `"debug@npm:1.0.0"`, `"c@*"`, or `"is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"`
 /// Returns borrowed strings to avoid allocations during parsing
-/// Returns (name_part, full_range) where full_range includes protocol if present
+/// Returns `(name_part, full_range)` where `full_range` includes protocol if present
 fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str, &str)> {
   // Find the @ that separates name from range
   // For scoped packages like @babel/core@npm:1.0.0, we need the LAST @ before range
@@ -321,464 +302,362 @@ fn parse_patch_range(input: &str) -> IResult<&str, &str> {
   take_while1(|c: char| c != ',' && c != '"').parse(input)
 }
 
-/// Parse indented key-value properties for a package
-/// perf: use `fold_many0` to build the Package directly without intermediate Vec allocation
+/// Parse indented key-value properties for a package using high-performance line scanning
 pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
-  // Build package directly using fold_many0 - no intermediate Vec allocation
-  let (rest, package) = fold_many0(
-    parse_property_line,
-    || Package::new("unknown", LinkType::Hard),
-    |mut package, property_value| {
-      match property_value {
-        PropertyValue::Simple(key, value) => match key {
-          "version" => {
-            package.version = Some(value.trim_matches('"'));
-          }
-          "resolution" => {
-            let raw = value.trim_matches('"');
-            // Best-effort parse of the resolution into a Locator: split on '@' first occurrence
-            // For scoped packages, find the second @ (after the scope)
-            // Examples: "debug@npm:1.0.0", "@babel/core@npm:1.0.0"
-            let at_index = if raw.starts_with('@') {
-              // Scoped package - find @ after the /
-              raw
-                .find('/')
-                .and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
-            } else {
-              raw.find('@')
-            };
-            if let Some(at_index) = at_index {
-              let (name_part, reference_with_at) = raw.split_at(at_index);
-              let ident = parse_name_to_ident(name_part);
-              // split_at keeps the '@' on the right; remove it
-              let reference = reference_with_at.trim_start_matches('@');
-              package.resolution_locator = Some(Locator::new(ident, reference));
-            }
-            package.resolution = Some(raw);
-          }
-          "languageName" => {
-            package.language_name = value;
-          }
-          "linkType" => {
-            package.link_type =
-              LinkType::try_from(value).unwrap_or_else(|()| panic!("Invalid link type: {value}"));
-          }
-          "checksum" => {
-            package.checksum = Some(value);
-          }
-          "conditions" => {
-            package.conditions = Some(value);
-          }
-          _ => {
-            panic!("Unknown property encountered in package entry: {key}");
-          }
-        },
-        PropertyValue::Dependencies(dependencies) => {
-          // Store the parsed dependencies in the package
-          for (dep_name, dep_range) in dependencies {
-            let ident = parse_name_to_ident(dep_name);
-            let descriptor = Descriptor::new(ident, dep_range);
-            package.dependencies.insert(ident, descriptor);
-          }
+  let mut package = Package::new("unknown", LinkType::Hard);
+  let mut remaining = input;
+
+  loop {
+    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line = &remaining[..line_end];
+
+    // Check if blank line (end of block)
+    if line.trim().is_empty() {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+      break;
+    }
+
+    // Skip to next line
+    remaining = if line_end < remaining.len() {
+      &remaining[line_end + 1..]
+    } else {
+      &remaining[line_end..]
+    };
+
+    // Parse the line based on content
+    if let Some(rest) = line.strip_prefix("  ") {
+      if let Some(rest) = rest.strip_prefix("version:") {
+        package.version = Some(rest.trim().trim_matches('"'));
+      } else if let Some(rest) = rest.strip_prefix("resolution:") {
+        let raw = rest.trim().trim_matches('"');
+        let at_index = if raw.starts_with('@') {
+          raw.find('/').and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
+        } else {
+          raw.find('@')
+        };
+        if let Some(at_index) = at_index {
+          let (name_part, reference_with_at) = raw.split_at(at_index);
+          let ident = parse_name_to_ident(name_part);
+          let reference = reference_with_at.trim_start_matches('@');
+          package.resolution_locator = Some(Locator::new(ident, reference));
         }
-        PropertyValue::PeerDependencies(peer_dependencies) => {
-          // Store the parsed peer dependencies in the package
-          for (dep_name, dep_range) in peer_dependencies {
-            let ident = parse_name_to_ident(dep_name);
-            let descriptor = Descriptor::new(ident, dep_range);
-            package.peer_dependencies.insert(ident, descriptor);
-          }
+        package.resolution = Some(raw);
+      } else if let Some(rest) = rest.strip_prefix("languageName:") {
+        package.language_name = rest.trim();
+      } else if let Some(rest) = rest.strip_prefix("linkType:") {
+        let link_type_str = rest.trim();
+        package.link_type =
+          LinkType::try_from(link_type_str).unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
+      } else if let Some(rest) = rest.strip_prefix("checksum:") {
+        package.checksum = Some(rest.trim());
+      } else if let Some(rest) = rest.strip_prefix("conditions:") {
+        package.conditions = Some(rest.trim());
+      } else if rest.strip_prefix("dependencies:").is_some() {
+        let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining)?;
+        remaining = new_remaining;
+        let mut deps_map = FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
+        for (dep_name, dep_range) in dependencies {
+          let ident = parse_name_to_ident(dep_name);
+          let descriptor = Descriptor::new(ident, dep_range);
+          deps_map.insert(ident, descriptor);
         }
-        PropertyValue::Bin(binaries) => {
-          // Store the parsed binary executables in the package
-          for (bin_name, bin_path) in binaries {
-            package.bin.insert(bin_name, bin_path);
-          }
+        package.dependencies = deps_map;
+      } else if rest.strip_prefix("peerDependencies:").is_some() {
+        let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining)?;
+        remaining = new_remaining;
+        let mut peer_deps_map = FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
+        for (dep_name, dep_range) in peer_dependencies {
+          let ident = parse_name_to_ident(dep_name);
+          let descriptor = Descriptor::new(ident, dep_range);
+          peer_deps_map.insert(ident, descriptor);
         }
-        PropertyValue::DependenciesMeta(meta) => {
-          // Store the parsed dependency metadata in the package
-          for (dep_name, dep_meta) in meta {
-            let ident = parse_name_to_ident(dep_name);
-            package.dependencies_meta.insert(ident, Some(dep_meta));
-          }
+        package.peer_dependencies = peer_deps_map;
+      } else if rest.strip_prefix("bin:").is_some() {
+        let (new_remaining, binaries) = parse_bin_block_scanner(remaining)?;
+        remaining = new_remaining;
+        let mut bin_map = FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
+        for (bin_name, bin_path) in binaries {
+          bin_map.insert(bin_name, bin_path);
         }
-        PropertyValue::PeerDependenciesMeta(meta) => {
-          // Store the parsed peer dependency metadata in the package
-          for (dep_name, dep_meta) in meta {
-            let ident = parse_name_to_ident(dep_name);
-            package.peer_dependencies_meta.insert(ident, dep_meta);
-          }
+        package.bin = bin_map;
+      } else if rest.strip_prefix("dependenciesMeta:").is_some() {
+        let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining)?;
+        remaining = new_remaining;
+        let mut meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        for (dep_name, dep_meta) in meta {
+          let ident = parse_name_to_ident(dep_name);
+          meta_map.insert(ident, Some(dep_meta));
         }
+        package.dependencies_meta = meta_map;
+      } else if rest.strip_prefix("peerDependenciesMeta:").is_some() {
+        let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining)?;
+        remaining = new_remaining;
+        let mut peer_meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        for (dep_name, dep_meta) in meta {
+          let ident = parse_name_to_ident(dep_name);
+          peer_meta_map.insert(ident, dep_meta);
+        }
+        package.peer_dependencies_meta = peer_meta_map;
       }
-      package
-    },
-  )
-  .parse(input)?;
-
-  // Consume any trailing whitespace and blank lines
-  let (rest, _) = fold_many0(
-    alt((tag("\n"), tag(" "), tag("\t"), tag("\r"))),
-    || (),
-    |(), _| (),
-  )
-  .parse(rest)?;
-
-  Ok((rest, package))
-}
-
-/// Parse a single property line with 2-space indentation
-fn parse_property_line(input: &str) -> IResult<&str, PropertyValue<'_>> {
-  // Try simple property first
-  if let Ok((rest, (key, value))) = parse_simple_property(input) {
-    return Ok((rest, PropertyValue::Simple(key, value)));
-  }
-
-  // Try dependencies block
-  if let Ok((rest, dependencies)) = parse_dependencies_block(input) {
-    return Ok((rest, PropertyValue::Dependencies(dependencies)));
-  }
-
-  // Try peer dependencies block
-  if let Ok((rest, peer_dependencies)) = parse_peer_dependencies_block(input) {
-    return Ok((rest, PropertyValue::PeerDependencies(peer_dependencies)));
-  }
-
-  // Try bin block
-  if let Ok((rest, binaries)) = parse_bin_block(input) {
-    return Ok((rest, PropertyValue::Bin(binaries)));
-  }
-
-  // Try dependenciesMeta block
-  if let Ok((rest, meta)) = parse_dependencies_meta_block(input) {
-    return Ok((rest, PropertyValue::DependenciesMeta(meta)));
-  }
-
-  // Try peerDependenciesMeta block
-  if let Ok((rest, meta)) = parse_peer_dependencies_meta_block(input) {
-    return Ok((rest, PropertyValue::PeerDependenciesMeta(meta)));
-  }
-
-  // If nothing matches, return an error
-  Err(nom::Err::Error(nom::error::Error::new(
-    input,
-    nom::error::ErrorKind::Alt,
-  )))
-}
-
-/// Enum to represent different types of property values
-#[derive(Debug)]
-enum PropertyValue<'a> {
-  Simple(&'a str, &'a str),
-  Dependencies(Vec<(&'a str, &'a str)>),
-  PeerDependencies(Vec<(&'a str, &'a str)>),
-  Bin(Vec<(&'a str, &'a str)>),
-  DependenciesMeta(Vec<(&'a str, DependencyMeta)>),
-  PeerDependenciesMeta(Vec<(&'a str, PeerDependencyMeta)>),
-}
-
-/// Parse a simple key-value property line
-pub fn parse_simple_property(input: &str) -> IResult<&str, (&str, &str)> {
-  let (rest, (_, key, _, _, value, _)) = (
-    tag("  "), // 2-space indentation
-    take_while1(|c: char| c.is_alphanumeric() || c == '_'),
-    char(':'),
-    space1,
-    is_not("\r\n"),
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (key, value)))
-}
-
-/// Parse a dependencies block
-fn parse_dependencies_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, dependencies)) = (
-    tag("  dependencies:"),
-    newline,
-    fold_many0(parse_dependency_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
-
-  Ok((rest, dependencies))
-}
-
-/// Parse a peerDependencies block
-fn parse_peer_dependencies_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, peer_dependencies)) = (
-    tag("  peerDependencies:"),
-    newline,
-    fold_many0(parse_dependency_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
-
-  Ok((rest, peer_dependencies))
-}
-
-/// Parse a bin block
-fn parse_bin_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, binaries)) = (
-    tag("  bin:"),
-    newline,
-    fold_many0(parse_bin_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
-
-  Ok((rest, binaries))
-}
-
-/// Parse a dependenciesMeta block
-fn parse_dependencies_meta_block(input: &str) -> IResult<&str, Vec<(&str, DependencyMeta)>> {
-  let (rest, (_, _, meta)) = (
-    tag("  dependenciesMeta:"),
-    newline,
-    fold_many0(
-      alt((
-        parse_dependency_meta_entry_inline,
-        parse_dependency_meta_entry_nested,
-      )),
-      Vec::new,
-      |mut acc, item| {
-        acc.push(item);
-        acc
-      },
-    ),
-  )
-    .parse(input)?;
-
-  Ok((rest, meta))
-}
-
-/// Parse a peerDependenciesMeta block
-fn parse_peer_dependencies_meta_block(
-  input: &str,
-) -> IResult<&str, Vec<(&str, PeerDependencyMeta)>> {
-  let (rest, (_, _, meta)) = (
-    tag("  peerDependenciesMeta:"),
-    newline,
-    fold_many0(
-      alt((
-        parse_peer_dependency_meta_entry_inline,
-        parse_peer_dependency_meta_entry_nested,
-      )),
-      Vec::new,
-      |mut acc, item| {
-        acc.push(item);
-        acc
-      },
-    ),
-  )
-    .parse(input)?;
-
-  Ok((rest, meta))
-}
-
-/// Parse a single dependency line with 4-space indentation
-fn parse_dependency_line(input: &str) -> IResult<&str, (&str, &str)> {
-  let (rest, (_, dep_name, _, _, dep_range, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    space1,
-    take_until("\n"),
-    opt(newline),
-  )
-    .parse(input)?;
-
-  let clean_range = dep_range.trim().trim_matches('"');
-  Ok((rest, (dep_name, clean_range)))
-}
-
-/// Parse a single bin line with 4-space indentation
-fn parse_bin_line(input: &str) -> IResult<&str, (&str, &str)> {
-  let (rest, (_, bin_name, _, _, bin_path, _)) = (
-    tag("    "),
-    take_while1(|c: char| {
-      c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-    }),
-    char(':'),
-    space1,
-    is_not("\r\n"),
-    newline,
-  )
-    .parse(input)?;
-
-  let clean_path = bin_path.trim().trim_matches('"');
-  Ok((rest, (bin_name, clean_path)))
-}
-
-/// Parse a single dependency meta line with inline format
-fn parse_dependency_meta_entry_inline(input: &str) -> IResult<&str, (&str, DependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    space1,
-    parse_meta_object,
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (dep_name, meta_content)))
-}
-
-/// Parse a single dependency meta entry with nested format
-fn parse_dependency_meta_entry_nested(input: &str) -> IResult<&str, (&str, DependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    newline,
-    parse_dependency_meta_object_indented,
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (dep_name, meta_content)))
-}
-
-/// Parse a dependency meta object with 6-space indentation
-fn parse_dependency_meta_object_indented(input: &str) -> IResult<&str, DependencyMeta> {
-  fn parse_indented_bool_line<'a>(
-    prop: &'static str,
-  ) -> impl Fn(&'a str) -> IResult<&'a str, bool> {
-    move |input: &str| {
-      let (rest, (_, _, _, _, value, _)) = (
-        tag("      "),
-        tag(prop),
-        char(':'),
-        space1,
-        alt((tag("true"), tag("false"))),
-        newline,
-      )
-        .parse(input)?;
-      Ok((rest, value == "true"))
     }
   }
 
-  let init = || (None, None, None);
-  let (rest, (built, optional, unplugged)) = fold_many0(
-    alt((
-      map(parse_indented_bool_line("built"), |v| (Some(v), None, None)),
-      map(parse_indented_bool_line("optional"), |v| {
-        (None, Some(v), None)
-      }),
-      map(parse_indented_bool_line("unplugged"), |v| {
-        (None, None, Some(v))
-      }),
-    )),
-    init,
-    |(b_acc, o_acc, u_acc), (b, o, u)| (b.or(b_acc), o.or(o_acc), u.or(u_acc)),
-  )
-  .parse(input)?;
-
-  Ok((
-    rest,
-    DependencyMeta {
-      built,
-      optional,
-      unplugged,
-    },
-  ))
+  Ok((remaining, package))
 }
 
-/// Parse a single peer dependency meta entry with inline format
-fn parse_peer_dependency_meta_entry_inline(
-  input: &str,
-) -> IResult<&str, (&str, PeerDependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    space1,
-    parse_peer_meta_object,
-    opt(newline),
-  )
-    .parse(input)?;
+fn parse_dependencies_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+  let mut dependencies = Vec::new();
+  let mut remaining = input;
 
-  Ok((rest, (dep_name, meta_content)))
+  loop {
+    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line = &remaining[..line_end];
+
+    if !line.starts_with("    ") {
+      break;
+    }
+
+    if line.trim().is_empty() {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+      break;
+    }
+
+    let rest = &line[4..];
+    if let Some(colon_idx) = rest.find(':') {
+      let dep_name = rest[..colon_idx].trim();
+      let dep_range = rest[colon_idx + 1..].trim().trim_matches('"');
+      dependencies.push((dep_name, dep_range));
+    }
+
+    remaining = if line_end < remaining.len() {
+      &remaining[line_end + 1..]
+    } else {
+      &remaining[line_end..]
+    };
+  }
+
+  Ok((remaining, dependencies))
 }
 
-/// Parse a single peer dependency meta entry with nested format
-fn parse_peer_dependency_meta_entry_nested(
-  input: &str,
-) -> IResult<&str, (&str, PeerDependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    newline,
-    parse_peer_meta_object_indented,
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (dep_name, meta_content)))
+fn parse_peer_dependencies_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+  parse_dependencies_block_scanner(input)
 }
+
+fn parse_bin_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+  let mut binaries = Vec::new();
+  let mut remaining = input;
+
+  loop {
+    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line = &remaining[..line_end];
+
+    if !line.starts_with("    ") {
+      break;
+    }
+
+    if line.trim().is_empty() {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+      break;
+    }
+
+    let rest = &line[4..];
+    if let Some(colon_idx) = rest.find(':') {
+      let bin_name = rest[..colon_idx].trim();
+      let bin_path = rest[colon_idx + 1..].trim().trim_matches('"');
+      binaries.push((bin_name, bin_path));
+    }
+
+    remaining = if line_end < remaining.len() {
+      &remaining[line_end + 1..]
+    } else {
+      &remaining[line_end..]
+    };
+  }
+
+  Ok((remaining, binaries))
+}
+
+fn parse_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<(&str, DependencyMeta)>> {
+  let mut meta = Vec::new();
+  let mut remaining = input;
+
+  loop {
+    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line = &remaining[..line_end];
+
+    if !line.starts_with("    ") {
+      break;
+    }
+
+    if line.trim().is_empty() {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+      break;
+    }
+
+    let rest = &line[4..];
+
+    if let Some(colon_idx) = rest.find(':') {
+      let dep_name = rest[..colon_idx].trim().trim_matches('"');
+      let value_part = rest[colon_idx + 1..].trim();
+
+      if value_part.starts_with('{') {
+        if let Ok((_, meta_obj)) = parse_meta_object(value_part) {
+          meta.push((dep_name, meta_obj));
+        }
+      } else {
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
+
+        let mut dep_meta = DependencyMeta {
+          built: None,
+          optional: None,
+          unplugged: None,
+        };
+
+        loop {
+          let meta_line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+          let meta_line = &remaining[..meta_line_end];
+
+          if !meta_line.starts_with("      ") || meta_line.trim().is_empty() {
+            break;
+          }
+
+          let meta_rest = &meta_line[6..];
+          if let Some(colon_idx) = meta_rest.find(':') {
+            let prop_name = meta_rest[..colon_idx].trim();
+            let prop_value = meta_rest[colon_idx + 1..].trim();
+            match prop_name {
+              "built" => dep_meta.built = Some(prop_value == "true"),
+              "optional" => dep_meta.optional = Some(prop_value == "true"),
+              "unplugged" => dep_meta.unplugged = Some(prop_value == "true"),
+              _ => {}
+            }
+          }
+
+          remaining = if meta_line_end < remaining.len() {
+            &remaining[meta_line_end + 1..]
+          } else {
+            &remaining[meta_line_end..]
+          };
+        }
+
+        meta.push((dep_name, dep_meta));
+        continue;
+      }
+    }
+
+    remaining = if line_end < remaining.len() {
+      &remaining[line_end + 1..]
+    } else {
+      &remaining[line_end..]
+    };
+  }
+
+  Ok((remaining, meta))
+}
+
+fn parse_peer_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<(&str, PeerDependencyMeta)>> {
+  let mut meta = Vec::new();
+  let mut remaining = input;
+
+  loop {
+    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line = &remaining[..line_end];
+
+    if !line.starts_with("    ") {
+      break;
+    }
+
+    if line.trim().is_empty() {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+      break;
+    }
+
+    let rest = &line[4..];
+
+    if let Some(colon_idx) = rest.find(':') {
+      let dep_name = rest[..colon_idx].trim().trim_matches('"');
+      let value_part = rest[colon_idx + 1..].trim();
+
+      if value_part.starts_with('{') {
+        if let Ok((_, meta_obj)) = parse_peer_meta_object(value_part) {
+          meta.push((dep_name, meta_obj));
+        }
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
+      } else {
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
+
+        let mut peer_meta = PeerDependencyMeta { optional: false };
+
+        loop {
+          let meta_line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+          let meta_line = &remaining[..meta_line_end];
+
+          if !meta_line.starts_with("      ") || meta_line.trim().is_empty() {
+            break;
+          }
+
+          let meta_rest = &meta_line[6..];
+          if let Some(colon_idx) = meta_rest.find(':') {
+            let prop_name = meta_rest[..colon_idx].trim();
+            let prop_value = meta_rest[colon_idx + 1..].trim();
+            if prop_name == "optional" {
+              peer_meta.optional = prop_value == "true";
+            }
+          }
+
+          remaining = if meta_line_end < remaining.len() {
+            &remaining[meta_line_end + 1..]
+          } else {
+            &remaining[meta_line_end..]
+          };
+        }
+
+        meta.push((dep_name, peer_meta));
+      }
+    } else {
+      remaining = if line_end < remaining.len() {
+        &remaining[line_end + 1..]
+      } else {
+        &remaining[line_end..]
+      };
+    }
+  }
+
+  Ok((remaining, meta))
+}
+
 
 /// Parse a peer dependency meta object with inline format
 fn parse_peer_meta_object(input: &str) -> IResult<&str, PeerDependencyMeta> {
@@ -804,25 +683,6 @@ fn parse_bool_property_inline(prop_name: &str) -> impl Fn(&str) -> IResult<&str,
 
     Ok((rest, value == "true"))
   }
-}
-
-/// Parse a peer dependency meta object with 6-space indentation
-fn parse_peer_meta_object_indented(input: &str) -> IResult<&str, PeerDependencyMeta> {
-  let (rest, (_, _, _, optional, _)) = (
-    tag("      "),
-    tag("optional:"),
-    space1,
-    alt((tag("true"), tag("false"))),
-    newline,
-  )
-    .parse(input)?;
-
-  Ok((
-    rest,
-    PeerDependencyMeta {
-      optional: optional == "true",
-    },
-  ))
 }
 
 /// Parse a dependency meta object like "{ built: true, optional: false }"
@@ -855,27 +715,6 @@ fn parse_meta_object(input: &str) -> IResult<&str, DependencyMeta> {
 mod tests {
   use super::*;
 
-  #[test]
-  fn test_parse_dependency_line_simple() {
-    let input = "    ms: 0.6.2\n";
-    let result = parse_dependency_line(input);
-    assert!(result.is_ok());
-    let (remaining, (dep_name, dep_range)) = result.unwrap();
-    assert_eq!(remaining, "");
-    assert_eq!(dep_name, "ms");
-    assert_eq!(dep_range, "0.6.2");
-  }
-
-  #[test]
-  fn test_parse_dependency_line_scoped_package() {
-    let input = "    @babel/code-frame: ^7.12.11\n";
-    let result = parse_dependency_line(input);
-    assert!(result.is_ok());
-    let (remaining, (dep_name, dep_range)) = result.unwrap();
-    assert_eq!(remaining, "");
-    assert_eq!(dep_name, "@babel/code-frame");
-    assert_eq!(dep_range, "^7.12.11");
-  }
 
   #[test]
   fn test_parse_descriptor_line_simple() {
@@ -964,19 +803,4 @@ __metadata:
     assert_eq!(descriptors[1].ident().name(), "c");
   }
 
-  #[test]
-  fn test_parse_peer_dependencies_meta_real_format() {
-    let input = r"  peerDependenciesMeta:
-    graphql-ws:
-      optional: true
-    react:
-      optional: true
-";
-
-    let result = parse_peer_dependencies_meta_block(input);
-    assert!(result.is_ok());
-    let (remaining, meta) = result.unwrap();
-    assert_eq!(meta.len(), 2);
-    assert!(remaining.is_empty());
-  }
 }
