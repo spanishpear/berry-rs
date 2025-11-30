@@ -1,3 +1,4 @@
+use memchr::memchr;
 use nom::IResult;
 use nom::{
   Parser,
@@ -8,9 +9,8 @@ use nom::{
   multi::fold_many0,
   sequence::{delimited, preceded, terminated},
 };
-use smallvec::SmallVec;
-use memchr::memchr;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::ident::{Descriptor, Ident};
 use crate::locator::Locator;
@@ -166,9 +166,7 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
 /// Convert parsed descriptor data to Descriptor.
 /// The protocol field is discarded as it's only needed for parsing disambiguation.
 #[inline]
-fn convert_to_descriptor<'a>(
-  (name_part, range): (&'a str, &'a str),
-) -> Descriptor<'a> {
+fn convert_to_descriptor<'a>((name_part, range): (&'a str, &'a str)) -> Descriptor<'a> {
   let ident = parse_name_to_ident(name_part);
   Descriptor::new(ident, range)
 }
@@ -325,7 +323,9 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         // handle `resolution` field
         let raw = rest.trim().trim_matches('"');
         let at_index = if raw.starts_with('@') {
-          raw.find('/').and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
+          raw
+            .find('/')
+            .and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
         } else {
           raw.find('@')
         };
@@ -341,8 +341,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         package.language_name = rest.trim();
       } else if let Some(rest) = rest.strip_prefix("linkType:") {
         let link_type_str = rest.trim();
-        package.link_type =
-          LinkType::try_from(link_type_str).unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
+        package.link_type = LinkType::try_from(link_type_str)
+          .unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
         // handle `checksum` field
       } else if let Some(rest) = rest.strip_prefix("checksum:") {
         package.checksum = Some(rest.trim());
@@ -353,7 +353,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       } else if rest.strip_prefix("dependencies:").is_some() {
         let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining);
         remaining = new_remaining;
-        let mut deps_map = FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
+        let mut deps_map =
+          FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in dependencies {
           let ident = parse_name_to_ident(dep_name);
           let descriptor = Descriptor::new(ident, dep_range);
@@ -363,7 +364,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       } else if rest.strip_prefix("peerDependencies:").is_some() {
         let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining);
         remaining = new_remaining;
-        let mut peer_deps_map = FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
+        let mut peer_deps_map =
+          FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in peer_dependencies {
           let ident = parse_name_to_ident(dep_name);
           let descriptor = Descriptor::new(ident, dep_range);
@@ -374,7 +376,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         // handle `bin` field
         let (new_remaining, binaries) = parse_bin_block_scanner(remaining);
         remaining = new_remaining;
-        let mut bin_map = FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
+        let mut bin_map =
+          FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
         for (bin_name, bin_path) in binaries {
           bin_map.insert(bin_name, bin_path);
         }
@@ -383,7 +386,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         // handle `dependenciesMeta` field
         let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
-        let mut meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        let mut meta_map =
+          FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
           let ident = parse_name_to_ident(dep_name);
           meta_map.insert(ident, Some(dep_meta));
@@ -393,7 +397,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         // handle `peerDependenciesMeta` field
         let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
-        let mut peer_meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        let mut peer_meta_map =
+          FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
           let ident = parse_name_to_ident(dep_name);
           peer_meta_map.insert(ident, dep_meta);
@@ -447,11 +452,13 @@ fn parse_dependencies_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
 
     let rest_bytes = &line_bytes[4..line_end];
 
-    if let Some((name_start, name_end, range_start, range_end)) = extract_key_value_bytes(rest_bytes, b':') && range_end >= range_start {
-        let dep_name = &remaining[4 + name_start..4 + name_end];
-        let dep_range = &remaining[4 + range_start..4 + range_end];
-        dependencies.push((dep_name, dep_range));
-
+    if let Some((name_start, name_end, range_start, range_end)) =
+      extract_key_value_bytes(rest_bytes, b':')
+      && range_end >= range_start
+    {
+      let dep_name = &remaining[4 + name_start..4 + name_end];
+      let dep_range = &remaining[4 + range_start..4 + range_end];
+      dependencies.push((dep_name, dep_range));
     }
 
     remaining = if line_end < line_bytes.len() {
@@ -493,10 +500,13 @@ fn parse_bin_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
 
     let rest_bytes = &line_bytes[4..line_end];
 
-    if let Some((name_start, name_end, path_start, path_end)) = extract_key_value_bytes(rest_bytes, b':') && path_end >= path_start {
-        let bin_name = &remaining[4 + name_start..4 + name_end];
-        let bin_path = &remaining[4 + path_start..4 + path_end];
-        binaries.push((bin_name, bin_path));
+    if let Some((name_start, name_end, path_start, path_end)) =
+      extract_key_value_bytes(rest_bytes, b':')
+      && path_end >= path_start
+    {
+      let bin_name = &remaining[4 + name_start..4 + name_end];
+      let bin_path = &remaining[4 + path_start..4 + path_end];
+      binaries.push((bin_name, bin_path));
     }
 
     remaining = if line_end < line_bytes.len() {
@@ -595,7 +605,9 @@ fn parse_dependencies_meta_block_scanner(input: &str) -> (&str, Vec<(&str, Depen
   (remaining, meta)
 }
 
-fn parse_peer_dependencies_meta_block_scanner(input: &str) -> (&str, Vec<(&str, PeerDependencyMeta)>) {
+fn parse_peer_dependencies_meta_block_scanner(
+  input: &str,
+) -> (&str, Vec<(&str, PeerDependencyMeta)>) {
   let mut meta = Vec::new();
   let mut remaining = input;
 
@@ -678,7 +690,6 @@ fn parse_peer_dependencies_meta_block_scanner(input: &str) -> (&str, Vec<(&str, 
   (remaining, meta)
 }
 
-
 /// Extract byte indices for a key-value pair from a delimiter-separated line.
 ///
 /// Handles trimming whitespace and quote removal in a single pass with byte operations.
@@ -717,7 +728,7 @@ fn extract_key_value_bytes(bytes: &[u8], delimiter: u8) -> Option<(usize, usize,
   let value_start_raw = colon_idx + 1;
   let value_start = bytes[value_start_raw..]
     .iter()
-    .position(|&b| b != b' ' && b != b'\t' && b != b'"')  // Skip whitespace AND quotes
+    .position(|&b| b != b' ' && b != b'\t' && b != b'"') // Skip whitespace AND quotes
     .map_or(bytes.len(), |i| value_start_raw + i);
 
   // Find end of value, again skipping whitespace and quotes
@@ -732,8 +743,6 @@ fn extract_key_value_bytes(bytes: &[u8], delimiter: u8) -> Option<(usize, usize,
 
   Some((name_start, name_end, value_start, value_end))
 }
-
-
 
 /// Parse a peer dependency meta object with inline format
 fn parse_peer_meta_object(input: &str) -> IResult<&str, PeerDependencyMeta> {
@@ -945,10 +954,16 @@ mod tests {
     assert_eq!(package.link_type, LinkType::Hard);
 
     assert_eq!(package.dependencies.len(), 2);
-    let ms_desc = package.dependencies.values().find(|d| d.ident().name() == "ms");
+    let ms_desc = package
+      .dependencies
+      .values()
+      .find(|d| d.ident().name() == "ms");
     assert!(ms_desc.is_some());
     assert_eq!(ms_desc.unwrap().range(), "0.6.2");
-    let foo_desc = package.dependencies.values().find(|d| d.ident().name() == "foo");
+    let foo_desc = package
+      .dependencies
+      .values()
+      .find(|d| d.ident().name() == "foo");
     assert!(foo_desc.is_some());
     assert_eq!(foo_desc.unwrap().range(), "^1.0.0");
   }
@@ -1084,10 +1099,16 @@ mod tests {
     assert_eq!(package.link_type, LinkType::Hard);
 
     assert_eq!(package.dependencies.len(), 2);
-    let lodash = package.dependencies.values().find(|d| d.ident().name() == "lodash");
+    let lodash = package
+      .dependencies
+      .values()
+      .find(|d| d.ident().name() == "lodash");
     assert!(lodash.is_some());
     assert_eq!(lodash.unwrap().range(), "^4.0.0");
-    let axios = package.dependencies.values().find(|d| d.ident().name() == "axios");
+    let axios = package
+      .dependencies
+      .values()
+      .find(|d| d.ident().name() == "axios");
     assert!(axios.is_some());
     assert_eq!(axios.unwrap().range(), "^0.21.0");
 
@@ -1217,5 +1238,4 @@ __metadata:
     assert_eq!(descriptor.ident().name(), "mypackage");
     assert_eq!(descriptor.range(), "packages/mypackage");
   }
-
 }
