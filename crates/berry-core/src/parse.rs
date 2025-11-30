@@ -28,6 +28,7 @@ fn parse_entry(input: &str) -> IResult<&str, Entry<'_>> {
   .parse(input)
 }
 
+// TODO: perf - could/should we take byteslice to avoid utf8 overhead?
 /// Entrypoint for parsing a yarn lockfile
 pub fn parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile<'_>> {
   let (rest, (_, _)) = parse_yarn_header(file_contents)?;
@@ -48,7 +49,7 @@ pub fn parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile<'_>> {
   };
 
   // Parse all package entries as full Entries
-  // Use fold_many0 to avoid intermediate Vec allocation from many0
+  // perf: fold_many0 to avoid intermediate Vec allocation from many0
   let (rest, entries) = fold_many0(parse_entry, Vec::new, |mut entries, entry| {
     entries.push(entry);
     entries
@@ -56,7 +57,7 @@ pub fn parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile<'_>> {
   .parse(rest)?;
 
   // Consume any trailing content (backticks, semicolons, whitespace, etc.)
-  // perf: use take_while instead of many0 - zero allocation
+  // perf: use take_while instead of many0 to avoid alloc
   let (rest, _) =
     take_while(|c: char| c == '`' || c == ';' || c == '\n' || c == ' ' || c == '\t' || c == '\r')
       .parse(rest)?;
@@ -164,12 +165,12 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
   Ok((rest, descriptors))
 }
 
-/// Convert parsed descriptor data (borrowed strings) to Descriptor
-/// All strings remain borrowed from the input - zero allocation!
+/// Convert parsed descriptor data to Descriptor.
+/// The protocol field is discarded as it's only needed for parsing disambiguation.
 #[inline]
 fn convert_to_descriptor<'a>((name_part, full_range): (&'a str, &'a str)) -> Descriptor<'a> {
 fn convert_to_descriptor<'a>(
-  (name_part, _protocol, range): (&'a str, &'a str, &'a str),
+  (name_part, range): (&'a str, &'a str),
 ) -> Descriptor<'a> {
   let ident = parse_name_to_ident(name_part);
   Descriptor::new(ident, full_range)
@@ -215,12 +216,50 @@ fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str, &str)> {
 
   // Parse @ separator
   let (after_at, _) = char('@').parse(after_name)?;
+/// Returns borrowed strings to avoid allocations during parsing.
+/// Returns `(name_part, range)` - the protocol is used internally for parsing but not exposed.
+fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
+  // Try patch protocol format first (e.g., patch:is-odd@npm%3A3.0.1#~/.yarn/patches/...)
+  if let Ok((remaining, (name_part, _, protocol, _, patch_range))) = (
+    parse_package_name,
+    char('@'),
+    parse_protocol,
+    char(':'),
+    parse_patch_range,
+  )
+    .parse(input)
+    && protocol == "patch"
+  {
+    return Ok((remaining, (name_part, patch_range)));
+  }
 
   // Everything after @ until comma or quote is the full range (including protocol if present)
   let (remaining, full_range) = take_while1(|c: char| c != ',' && c != '"').parse(after_at)?;
+  // Try protocol:range format (e.g., npm:1.0.0)
+  if let Ok((remaining, (name_part, _, _, _, range))) = (
+    parse_package_name,
+    char('@'),
+    parse_protocol,
+    char(':'),
+    take_while1(|c: char| c != ',' && c != '"'),
+  )
+    .parse(input)
+  {
+    return Ok((remaining, (name_part, range)));
+  }
 
   // Trim trailing whitespace from range to match JS parser behavior (e.g., "npm:^1.0.4 " -> "npm:^1.0.4")
   let full_range = full_range.trim_end();
+  // Try simple range format (e.g., * for c@*)
+  if let Ok((remaining, (name_part, _, range))) = (
+    parse_package_name,
+    char('@'),
+    take_while1(|c: char| c != ',' && c != '"'),
+  )
+    .parse(input)
+  {
+    return Ok((remaining, (name_part, range)));
+  }
 
   Ok((remaining, (name_part, full_range)))
 }
@@ -279,7 +318,19 @@ fn parse_patch_range(input: &str) -> IResult<&str, &str> {
   take_while1(|c: char| c != ',' && c != '"').parse(input)
 }
 
-/// Parse indented key-value properties for a package using high-performance line scanning
+/// Parse indented key-value properties for a package using high-performance line scanning.
+///
+/// This function processes the key-value properties within a package entry, handling:
+/// - Simple properties: version, resolution, languageName, linkType, checksum, conditions
+/// - Dependency blocks: dependencies, peerDependencies
+/// - Metadata blocks: dependenciesMeta, peerDependenciesMeta
+/// - Binary entries: bin
+///
+///
+/// We scan the input line-by-line using raw byte operations for #speed:
+/// - Use `memchr()` to find newlines
+/// - Use `strip_prefix()` for property key detection (zero allocation)
+/// - Use helper functions for byte-level value extraction
 pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
   let mut package = Package::new("unknown", LinkType::Hard);
   let mut remaining = input;
@@ -288,6 +339,7 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
     let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
     let line = &remaining[..line_end];
 
+    // TODO(perf) could / should we use simd here for `trim`? Do we even need it??
     // Check if blank line (end of block)
     if line.trim().is_empty() {
       remaining = if line_end < remaining.len() {
@@ -305,11 +357,17 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       &remaining[line_end..]
     };
 
-    // Parse the line based on content
+    // Dispatch to property parser based on property key using zero-allocation prefix checks.
+    // This pattern is efficient because:
+    // 1. strip_prefix() is a simple pointer comparison (no heap allocation)
+    // 2. We eliminate the need for string comparisons or pattern matching on full strings
+    // 3. Properties are checked in order of likelihood for the specific use case
     if let Some(rest) = line.strip_prefix("  ") {
+      // Simple scalar properties
       if let Some(rest) = rest.strip_prefix("version:") {
         package.version = Some(rest.trim().trim_matches('"'));
       } else if let Some(rest) = rest.strip_prefix("resolution:") {
+        // handle `resolution` field
         let raw = rest.trim().trim_matches('"');
         let at_index = if raw.starts_with('@') {
           raw.find('/').and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
@@ -324,17 +382,21 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.resolution = Some(raw);
       } else if let Some(rest) = rest.strip_prefix("languageName:") {
+        // handle `languageName` field
         package.language_name = rest.trim();
       } else if let Some(rest) = rest.strip_prefix("linkType:") {
         let link_type_str = rest.trim();
         package.link_type =
           LinkType::try_from(link_type_str).unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
+        // handle `checksum` field
       } else if let Some(rest) = rest.strip_prefix("checksum:") {
         package.checksum = Some(rest.trim());
       } else if let Some(rest) = rest.strip_prefix("conditions:") {
+        // handle `conditions` field
         package.conditions = Some(rest.trim());
+      // Block properties (nested indented content)
       } else if rest.strip_prefix("dependencies:").is_some() {
-        let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining)?;
+        let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining);
         remaining = new_remaining;
         let mut deps_map = FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in dependencies {
@@ -344,7 +406,7 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.dependencies = deps_map;
       } else if rest.strip_prefix("peerDependencies:").is_some() {
-        let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining)?;
+        let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining);
         remaining = new_remaining;
         let mut peer_deps_map = FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in peer_dependencies {
@@ -354,7 +416,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.peer_dependencies = peer_deps_map;
       } else if rest.strip_prefix("bin:").is_some() {
-        let (new_remaining, binaries) = parse_bin_block_scanner(remaining)?;
+        // handle `bin` field
+        let (new_remaining, binaries) = parse_bin_block_scanner(remaining);
         remaining = new_remaining;
         let mut bin_map = FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
         for (bin_name, bin_path) in binaries {
@@ -362,7 +425,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.bin = bin_map;
       } else if rest.strip_prefix("dependenciesMeta:").is_some() {
-        let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining)?;
+        // handle `dependenciesMeta` field
+        let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
         let mut meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
@@ -371,7 +435,8 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.dependencies_meta = meta_map;
       } else if rest.strip_prefix("peerDependenciesMeta:").is_some() {
-        let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining)?;
+        // handle `peerDependenciesMeta` field
+        let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
         let mut peer_meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
@@ -671,20 +736,38 @@ fn parse_dependency_meta_object_indented(input: &str) -> IResult<&str, Dependenc
   Ok((remaining, package))
 }
 
-fn parse_dependencies_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+/// Parse a "dependencies:" block using fast byte-level line scanning.
+///
+/// ## Input format
+/// ```text
+///   dependencies:
+///     ms: 0.6.2
+///     debug: ^3.0.0
+/// ```
+///
+/// Each dependency line has the format "    name: range" (4-space indented).
+/// We scan line-by-line using:
+/// - memchr(b':', bytes) for SIMD-accelerated byte finding
+/// - Byte-level `position()` and `rposition()` to trim whitespace
+/// - Borrowed slices to maintain zero-copy semantics
+///
+/// This approach is efficient because the format is ASCII-only and highly regular.
+fn parse_dependencies_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
   let mut dependencies = Vec::new();
   let mut remaining = input;
 
   loop {
-    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line_bytes = remaining.as_bytes();
+    let line_end = memchr(b'\n', line_bytes).unwrap_or(line_bytes.len());
     let line = &remaining[..line_end];
 
     if !line.starts_with("    ") {
       break;
     }
 
-    if line.trim().is_empty() {
-      remaining = if line_end < remaining.len() {
+    // Fast path: skip blank lines without allocating trim
+    if line.len() == 4 || (line.len() > 4 && line[4..].bytes().all(|b| b == b' ' || b == b'\t')) {
+      remaining = if line_end < line_bytes.len() {
         &remaining[line_end + 1..]
       } else {
         &remaining[line_end..]
@@ -692,41 +775,45 @@ fn parse_dependencies_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &st
       break;
     }
 
-    let rest = &line[4..];
-    if let Some(colon_idx) = rest.find(':') {
-      let dep_name = rest[..colon_idx].trim();
-      let dep_range = rest[colon_idx + 1..].trim().trim_matches('"');
-      dependencies.push((dep_name, dep_range));
+    let rest_bytes = &line_bytes[4..line_end];
+
+    if let Some((name_start, name_end, range_start, range_end)) = extract_key_value_bytes(rest_bytes, b':') && range_end >= range_start {
+        let dep_name = &remaining[4 + name_start..4 + name_end];
+        let dep_range = &remaining[4 + range_start..4 + range_end];
+        dependencies.push((dep_name, dep_range));
+
     }
 
-    remaining = if line_end < remaining.len() {
+    remaining = if line_end < line_bytes.len() {
       &remaining[line_end + 1..]
     } else {
       &remaining[line_end..]
     };
   }
 
-  Ok((remaining, dependencies))
+  (remaining, dependencies)
 }
 
-fn parse_peer_dependencies_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+fn parse_peer_dependencies_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
   parse_dependencies_block_scanner(input)
 }
 
-fn parse_bin_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+fn parse_bin_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
   let mut binaries = Vec::new();
   let mut remaining = input;
 
   loop {
-    let line_end = memchr(b'\n', remaining.as_bytes()).unwrap_or(remaining.len());
+    let line_bytes = remaining.as_bytes();
+    let line_end = memchr(b'\n', line_bytes).unwrap_or(line_bytes.len());
     let line = &remaining[..line_end];
 
     if !line.starts_with("    ") {
       break;
     }
 
-    if line.trim().is_empty() {
-      remaining = if line_end < remaining.len() {
+    // Fast path: skip blank lines without allocating trim
+    if line.len() == 4 || (line.len() > 4 && line[4..].bytes().all(|b| b == b' ' || b == b'\t')) {
+      remaining = if line_end < line_bytes.len() {
         &remaining[line_end + 1..]
       } else {
         &remaining[line_end..]
@@ -734,24 +821,25 @@ fn parse_bin_block_scanner(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
       break;
     }
 
-    let rest = &line[4..];
-    if let Some(colon_idx) = rest.find(':') {
-      let bin_name = rest[..colon_idx].trim();
-      let bin_path = rest[colon_idx + 1..].trim().trim_matches('"');
-      binaries.push((bin_name, bin_path));
+    let rest_bytes = &line_bytes[4..line_end];
+
+    if let Some((name_start, name_end, path_start, path_end)) = extract_key_value_bytes(rest_bytes, b':') && path_end >= path_start {
+        let bin_name = &remaining[4 + name_start..4 + name_end];
+        let bin_path = &remaining[4 + path_start..4 + path_end];
+        binaries.push((bin_name, bin_path));
     }
 
-    remaining = if line_end < remaining.len() {
+    remaining = if line_end < line_bytes.len() {
       &remaining[line_end + 1..]
     } else {
       &remaining[line_end..]
     };
   }
 
-  Ok((remaining, binaries))
+  (remaining, binaries)
 }
 
-fn parse_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<(&str, DependencyMeta)>> {
+fn parse_dependencies_meta_block_scanner(input: &str) -> (&str, Vec<(&str, DependencyMeta)>) {
   let mut meta = Vec::new();
   let mut remaining = input;
 
@@ -834,10 +922,10 @@ fn parse_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<(&str
     };
   }
 
-  Ok((remaining, meta))
+  (remaining, meta)
 }
 
-fn parse_peer_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<(&str, PeerDependencyMeta)>> {
+fn parse_peer_dependencies_meta_block_scanner(input: &str) -> (&str, Vec<(&str, PeerDependencyMeta)>) {
   let mut meta = Vec::new();
   let mut remaining = input;
 
@@ -917,8 +1005,64 @@ fn parse_peer_dependencies_meta_block_scanner(input: &str) -> IResult<&str, Vec<
     }
   }
 
-  Ok((remaining, meta))
+  (remaining, meta)
 }
+
+
+/// Extract byte indices for a key-value pair from a delimiter-separated line.
+///
+/// Handles trimming whitespace and quote removal in a single pass with byte operations.
+/// Returns tuple of (`name_start`, `name_end`, `value_start`, `value_end`) byte indices.
+///
+/// ## Example transformations
+///
+/// Input: `b"ms: 0.6.2"` (delimiter: `b':'`)
+/// Output: `(0, 2, 4, 9)` → bytes[0..2]="ms", bytes[4..9]="0.6.2"
+///
+/// Input: `b"  @babel/core:  \"^7.0.0\""` (delimiter: `b':'`)
+/// Output: `(2, 13, 17, 24)` → bytes[2..13]="@babel/core", bytes[17..24]="^7.0.0"
+///
+/// Input: `b"  optional:  true  "` (delimiter: `b':'`)
+/// Output: `(2, 10, 13, 17)` → bytes[2..10]="optional", bytes[13..17]="true"
+///
+/// The implementation uses:
+/// - `memchr(delimiter, bytes)` for SIMD-accelerated byte finding
+/// - `position()` and `rposition()` to locate trimming boundaries
+/// - Returns indices only, no allocations (maintains zero-copy semantics)
+#[inline]
+fn extract_key_value_bytes(bytes: &[u8], delimiter: u8) -> Option<(usize, usize, usize, usize)> {
+  let colon_idx = memchr(delimiter, bytes)?;
+
+  // Find name bounds by scanning for first/last non-whitespace bytes before delimiter
+  let name_start = bytes[..colon_idx]
+    .iter()
+    .position(|&b| b != b' ' && b != b'\t')?;
+  let name_end = bytes[..colon_idx]
+    .iter()
+    .rposition(|&b| b != b' ' && b != b'\t')
+    .map(|i| i + 1)?;
+
+  // Find value bounds, trimming spaces/tabs/quotes
+  // Skip past the delimiter and any whitespace
+  let value_start_raw = colon_idx + 1;
+  let value_start = bytes[value_start_raw..]
+    .iter()
+    .position(|&b| b != b' ' && b != b'\t' && b != b'"')  // Skip whitespace AND quotes
+    .map_or(bytes.len(), |i| value_start_raw + i);
+
+  // Find end of value, again skipping whitespace and quotes
+  let value_end = if value_start < bytes.len() {
+    bytes[value_start..]
+      .iter()
+      .rposition(|&b| b != b' ' && b != b'\t' && b != b'"')
+      .map_or(value_start, |i| value_start + i + 1)
+  } else {
+    value_start
+  };
+
+  Some((name_start, name_end, value_start, value_end))
+}
+
 
 
 /// Parse a peer dependency meta object with inline format
@@ -977,6 +1121,67 @@ fn parse_meta_object(input: &str) -> IResult<&str, DependencyMeta> {
 mod tests {
   use super::*;
 
+  #[test]
+  fn test_extract_key_value_bytes_simple() {
+    let input = b"name: value";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_with_leading_spaces() {
+    let input = b"   name: value";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_with_trailing_spaces() {
+    let input = b"name   : value   ";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_with_quotes() {
+    let input = b"name: \"value\"";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_with_spaces_and_quotes() {
+    let input = b"   name  :  \"value\"   ";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_scoped_package() {
+    let input = b"@babel/core: ^7.0.0";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"@babel/core");
+    assert_eq!(&input[vs..ve], b"^7.0.0");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_no_delimiter() {
+    let input = b"no_colon_here";
+    assert!(extract_key_value_bytes(input, b':').is_none());
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_empty_after_colon() {
+    let input = b"name:";
+    let result = extract_key_value_bytes(input, b':');
+    // Should handle gracefully - value_start == value_end
+    assert!(result.is_some());
+  }
 
   #[test]
   fn test_parse_descriptor_line_simple() {
@@ -1021,6 +1226,249 @@ mod tests {
     assert_eq!(package.resolution, Some("debug@npm:1.0.0"));
     assert_eq!(package.language_name, "node");
     assert_eq!(package.link_type, LinkType::Hard);
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_checksum() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  checksum: abc123def456
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.checksum, Some("abc123def456"));
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_conditions() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  conditions: os=linux
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.conditions, Some("os=linux"));
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_dependencies() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  dependencies:
+    ms: 0.6.2
+    foo: ^1.0.0
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("1.0.0"));
+    assert_eq!(package.resolution, Some("debug@npm:1.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+
+    assert_eq!(package.dependencies.len(), 2);
+    let ms_desc = package.dependencies.values().find(|d| d.ident().name() == "ms");
+    assert!(ms_desc.is_some());
+    assert_eq!(ms_desc.unwrap().range(), "0.6.2");
+    let foo_desc = package.dependencies.values().find(|d| d.ident().name() == "foo");
+    assert!(foo_desc.is_some());
+    assert_eq!(foo_desc.unwrap().range(), "^1.0.0");
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_peer_dependencies() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  peerDependencies:
+    react: "^16.0.0"
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("1.0.0"));
+    assert_eq!(package.resolution, Some("debug@npm:1.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+
+    assert_eq!(package.peer_dependencies.len(), 1);
+    let react_desc = package.peer_dependencies.values().next();
+    assert!(react_desc.is_some());
+    assert_eq!(react_desc.unwrap().ident().name(), "react");
+    assert_eq!(react_desc.unwrap().range(), "^16.0.0");
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_bin() {
+    let input = r#"  version: 1.0.0
+  resolution: "cli@npm:1.0.0"
+  bin:
+    mycli: ./bin/cli.js
+    other: ./bin/other.js
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("1.0.0"));
+    assert_eq!(package.resolution, Some("cli@npm:1.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+
+    assert_eq!(package.bin.len(), 2);
+    assert_eq!(package.bin.get("mycli"), Some(&"./bin/cli.js"));
+    assert_eq!(package.bin.get("other"), Some(&"./bin/other.js"));
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_dependencies_meta() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  dependenciesMeta:
+    ms:
+      optional: true
+      built: false
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.dependencies_meta.len(), 1);
+    let ms_ident = Ident::new(None, "ms");
+    let meta = package.dependencies_meta.get(&ms_ident);
+    assert!(meta.is_some());
+    if let Some(Some(meta_obj)) = meta {
+      assert_eq!(meta_obj.optional, Some(true));
+      assert_eq!(meta_obj.built, Some(false));
+    } else {
+      panic!("Expected Some(Some(DependencyMeta))");
+    }
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_peer_dependencies_meta() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  peerDependenciesMeta:
+    react:
+      optional: true
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.peer_dependencies_meta.len(), 1);
+    let react_ident = Ident::new(None, "react");
+    let meta = package.peer_dependencies_meta.get(&react_ident);
+    assert!(meta.is_some());
+    assert!(meta.unwrap().optional);
+  }
+
+  #[test]
+  fn test_parse_package_properties_resolution_with_scoped_package() {
+    let input = r#"  version: 7.0.0
+  resolution: "@babel/core@npm:7.0.0"
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.resolution, Some("@babel/core@npm:7.0.0"));
+    assert!(package.resolution_locator.is_some());
+    let locator = package.resolution_locator.unwrap();
+    assert_eq!(locator.ident().name(), "core");
+    assert_eq!(locator.ident().scope(), Some("@babel"));
+  }
+
+  #[test]
+  fn test_parse_package_properties_multiple_dependencies_and_bin() {
+    let input = r#"  version: 2.0.0
+  resolution: "mylib@npm:2.0.0"
+  dependencies:
+    lodash: ^4.0.0
+    axios: ^0.21.0
+  bin:
+    mybin: ./bin/index.js
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("2.0.0"));
+    assert_eq!(package.resolution, Some("mylib@npm:2.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+
+    assert_eq!(package.dependencies.len(), 2);
+    let lodash = package.dependencies.values().find(|d| d.ident().name() == "lodash");
+    assert!(lodash.is_some());
+    assert_eq!(lodash.unwrap().range(), "^4.0.0");
+    let axios = package.dependencies.values().find(|d| d.ident().name() == "axios");
+    assert!(axios.is_some());
+    assert_eq!(axios.unwrap().range(), "^0.21.0");
+
+    assert_eq!(package.bin.len(), 1);
+    assert_eq!(package.bin.get("mybin"), Some(&"./bin/index.js"));
+  }
+
+  #[test]
+  fn test_parse_package_properties_with_inline_meta_object() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  dependenciesMeta:
+    ms: { optional: true }
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("1.0.0"));
+    assert_eq!(package.resolution, Some("debug@npm:1.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+
+    assert_eq!(package.dependencies_meta.len(), 1);
+    let ms_ident = Ident::new(None, "ms");
+    let meta = package.dependencies_meta.get(&ms_ident);
+    assert!(meta.is_some());
+    if let Some(Some(meta_obj)) = meta {
+      assert_eq!(meta_obj.optional, Some(true));
+    } else {
+      panic!("Expected Some(Some(DependencyMeta))");
+    }
+  }
+
+  #[test]
+  fn test_parse_package_properties_empty_blocks() {
+    let input = r#"  version: 1.0.0
+  resolution: "debug@npm:1.0.0"
+  dependencies:
+  languageName: node
+  linkType: hard
+"#;
+    let result = parse_package_properties(input);
+    assert!(result.is_ok());
+    let (_, package) = result.unwrap();
+    assert_eq!(package.version, Some("1.0.0"));
+    assert_eq!(package.resolution, Some("debug@npm:1.0.0"));
+    assert_eq!(package.language_name, "node");
+    assert_eq!(package.link_type, LinkType::Hard);
+    assert_eq!(package.dependencies.len(), 0);
   }
 
   #[test]
@@ -1195,4 +1643,38 @@ __metadata:
     // Trailing whitespace should be trimmed to match JS parser behavior
     assert_eq!(descriptor.range(), "npm:^1.0.4");
   }
+  fn test_convert_to_descriptor_simple() {
+    let descriptor = convert_to_descriptor(("debug", "1.0.0"));
+
+    assert_eq!(descriptor.ident().name(), "debug");
+    assert_eq!(descriptor.ident().scope(), None);
+    assert_eq!(descriptor.range(), "1.0.0");
+  }
+
+  #[test]
+  fn test_convert_to_descriptor_scoped() {
+    let descriptor = convert_to_descriptor(("@babel/core", "^7.0.0"));
+
+    assert_eq!(descriptor.ident().name(), "core");
+    assert_eq!(descriptor.ident().scope(), Some("@babel"));
+    assert_eq!(descriptor.range(), "^7.0.0");
+  }
+
+  #[test]
+  fn test_convert_to_descriptor_unversioned() {
+    let descriptor = convert_to_descriptor(("c", "*"));
+
+    assert_eq!(descriptor.ident().name(), "c");
+    assert_eq!(descriptor.ident().scope(), None);
+    assert_eq!(descriptor.range(), "*");
+  }
+
+  #[test]
+  fn test_convert_to_descriptor_workspace() {
+    let descriptor = convert_to_descriptor(("mypackage", "packages/mypackage"));
+
+    assert_eq!(descriptor.ident().name(), "mypackage");
+    assert_eq!(descriptor.range(), "packages/mypackage");
+  }
+
 }
