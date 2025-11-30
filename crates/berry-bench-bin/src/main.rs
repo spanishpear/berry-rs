@@ -84,6 +84,10 @@ impl FixtureTarget {
       || path.display().to_string(),
       std::string::ToString::to_string,
     );
+    let label = path
+      .file_name()
+      .and_then(|name| name.to_str())
+      .map_or_else(|| path.display().to_string(), std::string::ToString::to_string);
     Self {
       label,
       source: FixtureSource::ArbitraryPath(path),

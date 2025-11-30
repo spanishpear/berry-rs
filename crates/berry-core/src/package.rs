@@ -1,7 +1,7 @@
 use crate::ident::{Descriptor, Ident};
 use crate::locator::Locator;
 use crate::metadata::{DependencyMeta, PeerDependencyMeta};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The type of link to use for a package
@@ -54,22 +54,22 @@ pub struct Package<'a> {
   /// A map of the package's dependencies. There's no distinction between prod
   /// dependencies and dev dependencies, because those have already been merged
   /// during the resolution process
-  pub dependencies: HashMap<Ident<'a>, Descriptor<'a>>,
+  pub dependencies: FxHashMap<Ident<'a>, Descriptor<'a>>,
 
   /// Map with additional information about direct dependencies
-  pub dependencies_meta: HashMap<Ident<'a>, Option<DependencyMeta>>,
+  pub dependencies_meta: FxHashMap<Ident<'a>, Option<DependencyMeta>>,
 
   /// Map of packages peer dependencies
-  pub peer_dependencies: HashMap<Ident<'a>, Descriptor<'a>>,
+  pub peer_dependencies: FxHashMap<Ident<'a>, Descriptor<'a>>,
 
   /// Map with additional information about peer dependencies
-  pub peer_dependencies_meta: HashMap<Ident<'a>, PeerDependencyMeta>,
+  pub peer_dependencies_meta: FxHashMap<Ident<'a>, PeerDependencyMeta>,
 
   /// all bin entries for the package
   ///
   /// We don't need binaries in resolution, but we do need them to keep `yarn run` fast
   /// else we have to parse and read all of the zipfiles
-  pub bin: HashMap<&'a str, &'a str>,
+  pub bin: FxHashMap<&'a str, &'a str>,
 }
 
 impl<'a> Package<'a> {
@@ -82,11 +82,11 @@ impl<'a> Package<'a> {
       link_type,
       checksum: None,
       conditions: None,
-      dependencies: HashMap::new(),
-      dependencies_meta: HashMap::new(),
-      peer_dependencies: HashMap::new(),
-      peer_dependencies_meta: HashMap::new(),
-      bin: HashMap::new(),
+      dependencies: FxHashMap::default(),
+      dependencies_meta: FxHashMap::default(),
+      peer_dependencies: FxHashMap::default(),
+      peer_dependencies_meta: FxHashMap::default(),
+      bin: FxHashMap::default(),
     }
   }
 

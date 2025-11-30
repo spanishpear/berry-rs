@@ -52,7 +52,7 @@ impl<'a> Range<'a> {
     self.raw
   }
 
-  /// Returns the protocol substring if present (e.g., "npm", "workspace", "patch").
+  /// Returns the protocol substring if present (e.g., `"npm"`, `"workspace"`, `"patch"`).
   pub fn protocol_str(&self) -> Option<&'a str> {
     self.protocol_sep_index.map(|i| &self.raw[..i])
   }
@@ -62,6 +62,7 @@ impl<'a> Range<'a> {
     self
       .protocol_sep_index
       .map_or(self.raw, |i| &self.raw[i + 1..])
+    self.protocol_sep_index.map_or(self.raw, |i| &self.raw[i + 1..])
   }
 }
 
