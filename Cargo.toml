@@ -9,7 +9,7 @@ resolver = "2"
   edition     = "2024"
   license     = "MIT OR Apache-2.0"
   repository  = "https://github.com/spanishpear/berry"
-  version     = "0.4.1"
+  version     = "0.5.0"
 
   [workspace.dependencies]
   berry      = { path = "crates/berry-core" }
@@ -27,9 +27,13 @@ resolver = "2"
   ] }
   nom = { version = "8.0.0" }
   rstest = { version = "0.26" }
-  smallvec = { version = "1.14", features = ["union", "const_generics", "const_new"]}
   serde = { version = "1.0", features = ["derive"] }
   serde_json = { version = "1.0" }
+  smallvec = { version = "1.14", features = [
+    "union",
+    "const_generics",
+    "const_new",
+  ] }
   thiserror = { version = "2.0.17" }
 
   # https://doc.rust-lang.org/rustc/lints/groups.html
