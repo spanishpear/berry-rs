@@ -26,6 +26,7 @@ resolver = "2"
     "type-def",
   ] }
   rstest = { version = "0.26" }
+  nom = { version = "8.0.0" }
   smallvec = { version = "1.14", features = ["union", "const_generics", "const_new"]}
   memchr = { version = "2.7" }
   serde = { version = "1.0", features = ["derive"] }

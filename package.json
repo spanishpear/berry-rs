@@ -28,6 +28,7 @@
 		"@oxc-node/core": "^0.0.32",
 		"@taplo/cli": "^0.7.0",
 		"@types/node": "^24.3.0",
+		"@yarnpkg/parsers": "^3.0.3",
 		"ava": "^6.2.0",
 		"chalk": "^5.4.1",
 		"husky": "^9.1.7",

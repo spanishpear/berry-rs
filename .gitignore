@@ -136,4 +136,4 @@ npm/
 
 profile.json.gz
 
-fixtures/*afm*.lock
+fixtures/afm*

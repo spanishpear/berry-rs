@@ -6,9 +6,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ident<'a> {
   /// The scope of the package, e.g. for `@scope/package`, this is `@scope`
-  scope: Option<&'a str>,
+  pub scope: Option<&'a str>,
   /// The name of the package, e.g. for `@scope/package`, this is `package`
-  name: &'a str,
+  pub name: &'a str,
 }
 
 impl<'a> Ident<'a> {
@@ -32,8 +32,8 @@ impl<'a> Ident<'a> {
 /// index of the first colon to allow zero-copy access to protocol and selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range<'a> {
-  raw: &'a str,
-  protocol_sep_index: Option<usize>,
+  pub raw: &'a str,
+  pub protocol_sep_index: Option<usize>,
 }
 
 impl<'a> Range<'a> {
@@ -62,7 +62,6 @@ impl<'a> Range<'a> {
     self
       .protocol_sep_index
       .map_or(self.raw, |i| &self.raw[i + 1..])
-    self.protocol_sep_index.map_or(self.raw, |i| &self.raw[i + 1..])
   }
 }
 
@@ -180,8 +179,8 @@ impl Range<'_> {
 ///`stringifyDescriptor` to generate a string representation of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Descriptor<'a> {
-  ident: Ident<'a>,
-  range: Range<'a>,
+  pub ident: Ident<'a>,
+  pub range: Range<'a>,
 }
 
 impl<'a> Descriptor<'a> {

@@ -3,7 +3,7 @@ use nom::IResult;
 use nom::{
   Parser,
   branch::alt,
-  bytes::complete::{tag, take_until, take_while, take_while1},
+  bytes::complete::{is_not, tag, take_until, take_while, take_while1},
   character::complete::{char, newline, space0, space1},
   combinator::{map, opt, recognize},
   multi::fold_many0,
@@ -94,6 +94,11 @@ pub fn parse_package_entry(
   let (rest, _) = newline.parse(rest)?; // consume newline after descriptor
   let (rest, package) = parse_package_properties(rest)?;
 
+  // Consume any blank lines between this entry and the next one
+  // fold_many0 expects to find the start of the next descriptor, but there may be
+  // blank lines in between
+  let (rest, _) = opt(newline).parse(rest)?;
+
   Ok((rest, (descriptors, package)))
 }
 
@@ -128,6 +133,9 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
     ))
     .parse(rest)?
   };
+
+  // Trim whitespace from descriptor string before parsing
+  let descriptor_string = descriptor_string.trim();
 
   // Parse first descriptor (borrowed data)
   let (remaining, first_data) = parse_single_descriptor(descriptor_string)?;
@@ -169,98 +177,25 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
 /// The protocol field is discarded as it's only needed for parsing disambiguation.
 #[inline]
 fn convert_to_descriptor<'a>((name_part, full_range): (&'a str, &'a str)) -> Descriptor<'a> {
-fn convert_to_descriptor<'a>(
-  (name_part, range): (&'a str, &'a str),
-) -> Descriptor<'a> {
-fn convert_to_descriptor<'a>((name_part, range): (&'a str, &'a str)) -> Descriptor<'a> {
   let ident = parse_name_to_ident(name_part);
   Descriptor::new(ident, full_range)
-  // For the range, we need to find or construct the full range string
-  // Since we're borrowing, we need to handle this carefully
-  // The range is either just `range` (no protocol) or we need to find it in the original
-  // Actually, the original descriptor_string contains the full range, so we can slice it
-  // But for now, let's use the parsed parts
-  // If protocol is empty, range is the full range
-  // If protocol is not empty, we need to reconstruct or find original
-  //
-  // For zero-copy, we need to work with the original string
-  // The simplest approach: find the @ in name_part and take everything after
-  // But that's already done by parse_single_descriptor
-  //
-  // The issue: Descriptor::new takes range_raw: &'a str
-  // We have protocol and range separately, need to combine them
-  // But we can't allocate! So we need to find the original substring
-  //
-  // Actually, looking at how parse_single_descriptor works, the range returned
-  // is the full range including protocol:selector or just selector
-  // Let me check - no, it returns (name_part, protocol, range) separately
-  //
-  // For true zero-copy, we'd need to restructure to keep the original range string
-  // For now, let's construct it - this is ONE allocation per descriptor
-  // Still much better than before
-  // TODO: Optimize this to avoid allocation by returning full range slice from parse_single_descriptor
-  // For now, use the range part (which is typically just the selector)
-  Descriptor::new(ident, range)
 }
 
 /// Parse a single descriptor string like `"debug@npm:1.0.0"`, `"c@*"`, or `"is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"`
-/// Returns borrowed strings to avoid allocations during parsing
-/// Returns (`name_part`, `full_range`) where `full_range` includes protocol if present (e.g., "npm:^1.0.0")
+/// Returns borrowed strings to avoid allocations during parsing.
+/// Returns `(name_part, range)` where:
+/// - npm protocol is stripped (it's implicit/default) → "1.0.0"
+/// - Other semantic protocols are preserved → "workspace:packages/pkg", "patch:...", etc.
+/// - Simple ranges without protocol are preserved as-is → "*"
 fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
   // Parse package name first
   let (after_name, name_part) = parse_package_name(input)?;
-/// Returns `(name_part, full_range)` where `full_range` includes protocol if present
-fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str, &str)> {
-  // Find the @ that separates name from range
-  // For scoped packages like @babel/core@npm:1.0.0, we need the LAST @ before range
-  // Strategy: find package name first, then take rest as range
 
   // Parse @ separator
   let (after_at, _) = char('@').parse(after_name)?;
-/// Returns borrowed strings to avoid allocations during parsing.
-/// Returns `(name_part, range)` - the protocol is used internally for parsing but not exposed.
-fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
-  // Try patch protocol format first (e.g., patch:is-odd@npm%3A3.0.1#~/.yarn/patches/...)
-  if let Ok((remaining, (name_part, _, protocol, _, patch_range))) = (
-    parse_package_name,
-    char('@'),
-    parse_protocol,
-    char(':'),
-    parse_patch_range,
-  )
-    .parse(input)
-    && protocol == "patch"
-  {
-    return Ok((remaining, (name_part, patch_range)));
-  }
 
   // Everything after @ until comma or quote is the full range (including protocol if present)
   let (remaining, full_range) = take_while1(|c: char| c != ',' && c != '"').parse(after_at)?;
-  // Try protocol:range format (e.g., npm:1.0.0)
-  if let Ok((remaining, (name_part, _, _, _, range))) = (
-    parse_package_name,
-    char('@'),
-    parse_protocol,
-    char(':'),
-    take_while1(|c: char| c != ',' && c != '"'),
-  )
-    .parse(input)
-  {
-    return Ok((remaining, (name_part, range)));
-  }
-
-  // Trim trailing whitespace from range to match JS parser behavior (e.g., "npm:^1.0.4 " -> "npm:^1.0.4")
-  let full_range = full_range.trim_end();
-  // Try simple range format (e.g., * for c@*)
-  if let Ok((remaining, (name_part, _, range))) = (
-    parse_package_name,
-    char('@'),
-    take_while1(|c: char| c != ',' && c != '"'),
-  )
-    .parse(input)
-  {
-    return Ok((remaining, (name_part, range)));
-  }
 
   Ok((remaining, (name_part, full_range)))
 }
@@ -304,20 +239,6 @@ fn parse_package_name(input: &str) -> IResult<&str, &str> {
   .parse(input)
 }
 
-/// Parse indented key-value properties for a package
-/// perf: use `fold_many0` to build the Package directly without intermediate Vec allocation
-/// Parse protocol part like npm, workspace, git, etc.
-fn parse_protocol(input: &str) -> IResult<&str, &str> {
-  // Support common protocol tokens including git+ssh
-  take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_' || c == '+').parse(input)
-}
-
-/// Parse patch range which can be complex like:
-/// - "is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"
-/// - "typescript@npm%3A^5.8.3#optional!builtin<compat/typescript>"
-fn parse_patch_range(input: &str) -> IResult<&str, &str> {
-  take_while1(|c: char| c != ',' && c != '"').parse(input)
-}
 
 /// Parse indented key-value properties for a package using high-performance line scanning.
 ///
@@ -351,13 +272,6 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       break;
     }
 
-    // Skip to next line
-    remaining = if line_end < remaining.len() {
-      &remaining[line_end + 1..]
-    } else {
-      &remaining[line_end..]
-    };
-
     // Dispatch to property parser based on property key using zero-allocation prefix checks.
     // This pattern is efficient because:
     // 1. strip_prefix() is a simple pointer comparison (no heap allocation)
@@ -367,6 +281,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       // Simple scalar properties
       if let Some(rest) = rest.strip_prefix("version:") {
         package.version = Some(rest.trim().trim_matches('"'));
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       } else if let Some(rest) = rest.strip_prefix("resolution:") {
         // handle `resolution` field
         let raw = rest.trim().trim_matches('"');
@@ -384,21 +304,58 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
           package.resolution_locator = Some(Locator::new(ident, reference));
         }
         package.resolution = Some(raw);
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       } else if let Some(rest) = rest.strip_prefix("languageName:") {
         // handle `languageName` field
         package.language_name = rest.trim();
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       } else if let Some(rest) = rest.strip_prefix("linkType:") {
         let link_type_str = rest.trim();
         package.link_type = LinkType::try_from(link_type_str)
           .unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         // handle `checksum` field
       } else if let Some(rest) = rest.strip_prefix("checksum:") {
         package.checksum = Some(rest.trim());
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       } else if let Some(rest) = rest.strip_prefix("conditions:") {
         // handle `conditions` field
         package.conditions = Some(rest.trim());
+        // Skip to next line for scalar properties
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       // Block properties (nested indented content)
+      // For block properties, skip the property header line first, THEN call the scanner
       } else if rest.strip_prefix("dependencies:").is_some() {
+        // Skip past the "dependencies:" line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining);
         remaining = new_remaining;
         let mut deps_map =
@@ -410,6 +367,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.dependencies = deps_map;
       } else if rest.strip_prefix("peerDependencies:").is_some() {
+        // Skip past the "peerDependencies:" line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining);
         remaining = new_remaining;
         let mut peer_deps_map =
@@ -421,6 +384,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.peer_dependencies = peer_deps_map;
       } else if rest.strip_prefix("bin:").is_some() {
+        // Skip past the "bin:" line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         // handle `bin` field
         let (new_remaining, binaries) = parse_bin_block_scanner(remaining);
         remaining = new_remaining;
@@ -431,6 +400,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.bin = bin_map;
       } else if rest.strip_prefix("dependenciesMeta:").is_some() {
+        // Skip past the "dependenciesMeta:" line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         // handle `dependenciesMeta` field
         let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
@@ -442,6 +417,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.dependencies_meta = meta_map;
       } else if rest.strip_prefix("peerDependenciesMeta:").is_some() {
+        // Skip past the "peerDependenciesMeta:" line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
         // handle `peerDependenciesMeta` field
         let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
@@ -452,72 +433,20 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
           peer_meta_map.insert(ident, dep_meta);
         }
         package.peer_dependencies_meta = peer_meta_map;
+      } else {
+        // Unknown property, skip to next line
+        remaining = if line_end < remaining.len() {
+          &remaining[line_end + 1..]
+        } else {
+          &remaining[line_end..]
+        };
       }
-      package
-    },
-  )
-  .parse(input)?;
+    }
+  }
 
-  // Consume any trailing whitespace and blank lines
-  let (rest, ()) = fold_many0(
-    alt((tag("\n"), tag(" "), tag("\t"), tag("\r"))),
-    || (),
-    |(), _| (),
-  )
-  .parse(rest)?;
-
-  Ok((rest, package))
+  Ok((remaining, package))
 }
 
-/// Parse a single property line with 2-space indentation
-fn parse_property_line(input: &str) -> IResult<&str, PropertyValue<'_>> {
-  // Try simple property first
-  if let Ok((rest, (key, value))) = parse_simple_property(input) {
-    return Ok((rest, PropertyValue::Simple(key, value)));
-  }
-
-  // Try dependencies block
-  if let Ok((rest, dependencies)) = parse_dependencies_block(input) {
-    return Ok((rest, PropertyValue::Dependencies(dependencies)));
-  }
-
-  // Try peer dependencies block
-  if let Ok((rest, peer_dependencies)) = parse_peer_dependencies_block(input) {
-    return Ok((rest, PropertyValue::PeerDependencies(peer_dependencies)));
-  }
-
-  // Try bin block
-  if let Ok((rest, binaries)) = parse_bin_block(input) {
-    return Ok((rest, PropertyValue::Bin(binaries)));
-  }
-
-  // Try dependenciesMeta block
-  if let Ok((rest, meta)) = parse_dependencies_meta_block(input) {
-    return Ok((rest, PropertyValue::DependenciesMeta(meta)));
-  }
-
-  // Try peerDependenciesMeta block
-  if let Ok((rest, meta)) = parse_peer_dependencies_meta_block(input) {
-    return Ok((rest, PropertyValue::PeerDependenciesMeta(meta)));
-  }
-
-  // If nothing matches, return an error
-  Err(nom::Err::Error(nom::error::Error::new(
-    input,
-    nom::error::ErrorKind::Alt,
-  )))
-}
-
-/// Enum to represent different types of property values
-#[derive(Debug)]
-enum PropertyValue<'a> {
-  Simple(&'a str, &'a str),
-  Dependencies(Vec<(&'a str, &'a str)>),
-  PeerDependencies(Vec<(&'a str, &'a str)>),
-  Bin(Vec<(&'a str, &'a str)>),
-  DependenciesMeta(Vec<(&'a str, DependencyMeta)>),
-  PeerDependenciesMeta(Vec<(&'a str, PeerDependencyMeta)>),
-}
 
 /// Parse a simple key-value property line
 pub fn parse_simple_property(input: &str) -> IResult<&str, (&str, &str)> {
@@ -534,215 +463,33 @@ pub fn parse_simple_property(input: &str) -> IResult<&str, (&str, &str)> {
   Ok((rest, (key, value)))
 }
 
-/// Parse a dependencies block
-fn parse_dependencies_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, dependencies)) = (
-    tag("  dependencies:"),
-    newline,
-    fold_many0(parse_dependency_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
 
-  Ok((rest, dependencies))
+/// Parse a peer dependency meta object with inline format
+fn parse_peer_meta_object(input: &str) -> IResult<&str, PeerDependencyMeta> {
+  let (rest, _) = char('{')(input)?;
+  let (rest, _) = space0(rest)?;
+  let (rest, optional) = parse_bool_property_inline("optional")(rest)?;
+  let (rest, _) = space0(rest)?;
+  let (rest, _) = char('}')(rest)?;
+
+  Ok((rest, PeerDependencyMeta { optional }))
 }
 
-/// Parse a peerDependencies block
-fn parse_peer_dependencies_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, peer_dependencies)) = (
-    tag("  peerDependencies:"),
-    newline,
-    fold_many0(parse_dependency_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
+/// Parse a boolean property for inline format
+fn parse_bool_property_inline(prop_name: &str) -> impl Fn(&str) -> IResult<&str, bool> + '_ {
+  move |input: &str| {
+    let (rest, (_, _, _, value)) = (
+      tag(prop_name),
+      char(':'),
+      space0,
+      alt((tag("true"), tag("false"))),
+    )
+      .parse(input)?;
 
-  Ok((rest, peer_dependencies))
-}
-
-/// Parse a bin block
-fn parse_bin_block(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-  let (rest, (_, _, binaries)) = (
-    tag("  bin:"),
-    newline,
-    fold_many0(parse_bin_line, Vec::new, |mut acc, item| {
-      acc.push(item);
-      acc
-    }),
-  )
-    .parse(input)?;
-
-  Ok((rest, binaries))
-}
-
-/// Parse a dependenciesMeta block
-fn parse_dependencies_meta_block(input: &str) -> IResult<&str, Vec<(&str, DependencyMeta)>> {
-  let (rest, (_, _, meta)) = (
-    tag("  dependenciesMeta:"),
-    newline,
-    fold_many0(
-      alt((
-        parse_dependency_meta_entry_inline,
-        parse_dependency_meta_entry_nested,
-      )),
-      Vec::new,
-      |mut acc, item| {
-        acc.push(item);
-        acc
-      },
-    ),
-  )
-    .parse(input)?;
-
-  Ok((rest, meta))
-}
-
-/// Parse a peerDependenciesMeta block
-fn parse_peer_dependencies_meta_block(
-  input: &str,
-) -> IResult<&str, Vec<(&str, PeerDependencyMeta)>> {
-  let (rest, (_, _, meta)) = (
-    tag("  peerDependenciesMeta:"),
-    newline,
-    fold_many0(
-      alt((
-        parse_peer_dependency_meta_entry_inline,
-        parse_peer_dependency_meta_entry_nested,
-      )),
-      Vec::new,
-      |mut acc, item| {
-        acc.push(item);
-        acc
-      },
-    ),
-  )
-    .parse(input)?;
-
-  Ok((rest, meta))
-}
-
-/// Parse a single dependency line with 4-space indentation
-fn parse_dependency_line(input: &str) -> IResult<&str, (&str, &str)> {
-  let (rest, (_, dep_name, _, _, dep_range, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    space1,
-    take_until("\n"),
-    opt(newline),
-  )
-    .parse(input)?;
-
-  let clean_range = dep_range.trim().trim_matches('"');
-  Ok((rest, (dep_name, clean_range)))
-}
-
-/// Parse a single bin line with 4-space indentation
-fn parse_bin_line(input: &str) -> IResult<&str, (&str, &str)> {
-  let (rest, (_, bin_name, _, _, bin_path, _)) = (
-    tag("    "),
-    take_while1(|c: char| {
-      c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-    }),
-    char(':'),
-    space1,
-    is_not("\r\n"),
-    newline,
-  )
-    .parse(input)?;
-
-  let clean_path = bin_path.trim().trim_matches('"');
-  Ok((rest, (bin_name, clean_path)))
-}
-
-/// Parse a single dependency meta line with inline format
-fn parse_dependency_meta_entry_inline(input: &str) -> IResult<&str, (&str, DependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    space1,
-    parse_meta_object,
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (dep_name, meta_content)))
-}
-
-/// Parse a single dependency meta entry with nested format
-fn parse_dependency_meta_entry_nested(input: &str) -> IResult<&str, (&str, DependencyMeta)> {
-  let (rest, (_, dep_name, _, _, meta_content, _)) = (
-    tag("    "),
-    alt((
-      delimited(
-        char('"'),
-        take_while1(|c: char| {
-          c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-        }),
-        char('"'),
-      ),
-      take_while1(|c: char| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/' || c == '.'
-      }),
-    )),
-    char(':'),
-    newline,
-    parse_dependency_meta_object_indented,
-    opt(newline),
-  )
-    .parse(input)?;
-
-  Ok((rest, (dep_name, meta_content)))
-}
-
-/// Parse a dependency meta object with 6-space indentation
-fn parse_dependency_meta_object_indented(input: &str) -> IResult<&str, DependencyMeta> {
-  fn parse_indented_bool_line<'a>(
-    prop: &'static str,
-  ) -> impl Fn(&'a str) -> IResult<&'a str, bool> {
-    move |input: &str| {
-      let (rest, (_, _, _, _, value, _)) = (
-        tag("      "),
-        tag(prop),
-        char(':'),
-        space1,
-        alt((tag("true"), tag("false"))),
-        newline,
-      )
-        .parse(input)?;
-      Ok((rest, value == "true"))
-    }
+    Ok((rest, value == "true"))
   }
-
-  Ok((remaining, package))
 }
+
 
 /// Parse a "dependencies:" block using fast byte-level line scanning.
 ///
@@ -780,7 +527,7 @@ fn parse_dependencies_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
       } else {
         &remaining[line_end..]
       };
-      break;
+      continue;
     }
 
     let rest_bytes = &line_bytes[4..line_end];
@@ -789,8 +536,13 @@ fn parse_dependencies_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
       extract_key_value_bytes(rest_bytes, b':')
       && range_end >= range_start
     {
-      let dep_name = &remaining[4 + name_start..4 + name_end];
-      let dep_range = &remaining[4 + range_start..4 + range_end];
+      // Extract from rest_bytes (which is the line after the 4-space indent)
+      let dep_name = std::str::from_utf8(&rest_bytes[name_start..name_end])
+        .unwrap_or("")
+        .trim_matches('"');
+      let dep_range = std::str::from_utf8(&rest_bytes[range_start..range_end])
+        .unwrap_or("")
+        .trim_matches('"');
       dependencies.push((dep_name, dep_range));
     }
 
@@ -837,8 +589,13 @@ fn parse_bin_block_scanner(input: &str) -> (&str, Vec<(&str, &str)>) {
       extract_key_value_bytes(rest_bytes, b':')
       && path_end >= path_start
     {
-      let bin_name = &remaining[4 + name_start..4 + name_end];
-      let bin_path = &remaining[4 + path_start..4 + path_end];
+      // Extract from rest_bytes (which is the line after the 4-space indent)
+      let bin_name = std::str::from_utf8(&rest_bytes[name_start..name_end])
+        .unwrap_or("")
+        .trim_matches('"');
+      let bin_path = std::str::from_utf8(&rest_bytes[path_start..path_end])
+        .unwrap_or("")
+        .trim_matches('"');
       binaries.push((bin_name, bin_path));
     }
 
@@ -1033,8 +790,8 @@ fn parse_peer_dependencies_meta_block_scanner(
 /// Input: `b"ms: 0.6.2"` (delimiter: `b':'`)
 /// Output: `(0, 2, 4, 9)` → bytes[0..2]="ms", bytes[4..9]="0.6.2"
 ///
-/// Input: `b"  @babel/core:  \"^7.0.0\""` (delimiter: `b':'`)
-/// Output: `(2, 13, 17, 24)` → bytes[2..13]="@babel/core", bytes[17..24]="^7.0.0"
+/// Input: `b"  \"@babel/core\":  \"^7.0.0\""` (delimiter: `b':'`)
+/// Output: `(3, 17, 21, 31)` → bytes[3..17]="@babel/core", bytes[21..31]="^7.0.0"
 ///
 /// Input: `b"  optional:  true  "` (delimiter: `b':'`)
 /// Output: `(2, 10, 13, 17)` → bytes[2..10]="optional", bytes[13..17]="true"
@@ -1042,65 +799,56 @@ fn parse_peer_dependencies_meta_block_scanner(
 /// The implementation uses:
 /// - `memchr(delimiter, bytes)` for SIMD-accelerated byte finding
 /// - `position()` and `rposition()` to locate trimming boundaries
+/// - Properly handles quoted strings by including opening/closing quotes in the skip
 /// - Returns indices only, no allocations (maintains zero-copy semantics)
 #[inline]
 fn extract_key_value_bytes(bytes: &[u8], delimiter: u8) -> Option<(usize, usize, usize, usize)> {
   let colon_idx = memchr(delimiter, bytes)?;
 
-  // Find name bounds by scanning for first/last non-whitespace bytes before delimiter
-  let name_start = bytes[..colon_idx]
-    .iter()
-    .position(|&b| b != b' ' && b != b'\t')?;
-  let name_end = bytes[..colon_idx]
-    .iter()
-    .rposition(|&b| b != b' ' && b != b'\t')
-    .map(|i| i + 1)?;
+  // Find name bounds: skip whitespace and quotes, find content boundaries
+  let name_part = &bytes[..colon_idx];
+  let mut name_start = 0;
+  let mut name_end = colon_idx;
 
-  // Find value bounds, trimming spaces/tabs/quotes
-  // Skip past the delimiter and any whitespace
-  let value_start_raw = colon_idx + 1;
-  let value_start = bytes[value_start_raw..]
-    .iter()
-    .position(|&b| b != b' ' && b != b'\t' && b != b'"') // Skip whitespace AND quotes
-    .map_or(bytes.len(), |i| value_start_raw + i);
+  // Skip leading whitespace and quotes from the name
+  while name_start < name_end && (name_part[name_start] == b' ' || name_part[name_start] == b'\t' || name_part[name_start] == b'"') {
+    name_start += 1;
+  }
 
-  // Find end of value, again skipping whitespace and quotes
-  let value_end = if value_start < bytes.len() {
-    bytes[value_start..]
-      .iter()
-      .rposition(|&b| b != b' ' && b != b'\t' && b != b'"')
-      .map_or(value_start, |i| value_start + i + 1)
+  // Skip trailing whitespace and quotes from the name
+  while name_end > name_start && (name_part[name_end - 1] == b' ' || name_part[name_end - 1] == b'\t' || name_part[name_end - 1] == b'"') {
+    name_end -= 1;
+  }
+
+  // Find value bounds: skip whitespace and quotes, find content boundaries
+  let value_part_start = colon_idx + 1;
+  let mut value_start = value_part_start;
+  let mut value_end = bytes.len();
+
+  // Skip leading whitespace and quotes from the value
+  while value_start < value_end && (bytes[value_start] == b' ' || bytes[value_start] == b'\t' || bytes[value_start] == b'"') {
+    value_start += 1;
+  }
+
+  // Skip trailing quotes from the value, but preserve internal whitespace
+  // Check if value was quoted: if we found a leading quote, look for matching closing quote
+  let had_quotes = value_part_start < value_start && bytes[value_part_start + (value_start - value_part_start - 1)] == b'"';
+  if had_quotes && value_end > value_start && bytes[value_end - 1] == b'"' {
+    // Value was quoted, only strip the closing quote
+    value_end -= 1;
   } else {
-    value_start
-  };
+    // Value was not quoted, strip trailing whitespace and quotes
+    while value_end > value_start && (bytes[value_end - 1] == b' ' || bytes[value_end - 1] == b'\t' || bytes[value_end - 1] == b'"') {
+      value_end -= 1;
+    }
+  }
+
+  // Ensure valid ranges
+  if name_start >= name_end || value_start >= value_end {
+    return Some((name_start.min(name_end), name_start.min(name_end), value_start.min(value_end), value_start.min(value_end)));
+  }
 
   Some((name_start, name_end, value_start, value_end))
-}
-
-/// Parse a peer dependency meta object with inline format
-fn parse_peer_meta_object(input: &str) -> IResult<&str, PeerDependencyMeta> {
-  let (rest, _) = char('{')(input)?;
-  let (rest, _) = space0(rest)?;
-  let (rest, optional) = parse_bool_property_inline("optional")(rest)?;
-  let (rest, _) = space0(rest)?;
-  let (rest, _) = char('}')(rest)?;
-
-  Ok((rest, PeerDependencyMeta { optional }))
-}
-
-/// Parse a boolean property for inline format
-fn parse_bool_property_inline(prop_name: &str) -> impl Fn(&str) -> IResult<&str, bool> + '_ {
-  move |input| {
-    let (rest, (_, _, _, value)) = (
-      tag(prop_name),
-      char(':'),
-      space1,
-      alt((tag("true"), tag("false"))),
-    )
-      .parse(input)?;
-
-    Ok((rest, value == "true"))
-  }
 }
 
 /// Parse a dependency meta object like "{ built: true, optional: false }"
@@ -1154,6 +902,7 @@ mod tests {
     let input = b"name   : value   ";
     let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
     assert_eq!(&input[ns..ne], b"name");
+    // Unquoted values: trailing spaces are stripped
     assert_eq!(&input[vs..ve], b"value");
   }
 
@@ -1170,7 +919,17 @@ mod tests {
     let input = b"   name  :  \"value\"   ";
     let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
     assert_eq!(&input[ns..ne], b"name");
+    // Quoted values: preserve internal whitespace, strip trailing whitespace outside quotes
     assert_eq!(&input[vs..ve], b"value");
+  }
+
+  #[test]
+  fn test_extract_key_value_bytes_with_space_in_quotes() {
+    let input = b"name: \"value \"";
+    let (ns, ne, vs, ve) = extract_key_value_bytes(input, b':').unwrap();
+    assert_eq!(&input[ns..ne], b"name");
+    // Quoted values: preserve spaces inside the quotes
+    assert_eq!(&input[vs..ve], b"value ");
   }
 
   #[test]
@@ -1538,22 +1297,6 @@ __metadata:
   }
 
   #[test]
-  fn test_parse_peer_dependencies_meta_real_format() {
-    let input = r"  peerDependenciesMeta:
-    graphql-ws:
-      optional: true
-    react:
-      optional: true
-";
-
-    let result = parse_peer_dependencies_meta_block(input);
-    assert!(result.is_ok());
-    let (remaining, meta) = result.unwrap();
-    assert_eq!(meta.len(), 2);
-    assert!(remaining.is_empty());
-  }
-
-  #[test]
   fn test_descriptor_range_includes_npm_protocol() {
     let input = r#""debug@npm:^4.3.0":"#;
     let result = parse_descriptor_line(input);
@@ -1667,6 +1410,8 @@ __metadata:
     // Trailing whitespace should be trimmed to match JS parser behavior
     assert_eq!(descriptor.range(), "npm:^1.0.4");
   }
+
+  #[test]
   fn test_convert_to_descriptor_simple() {
     let descriptor = convert_to_descriptor(("debug", "1.0.0"));
 
@@ -1699,5 +1444,135 @@ __metadata:
 
     assert_eq!(descriptor.ident().name(), "mypackage");
     assert_eq!(descriptor.range(), "packages/mypackage");
+  }
+
+  #[test]
+  fn test_adobe_css_tools_descriptor() {
+    let input = r#""@adobe/css-tools@npm:^4.0.1, @adobe/css-tools@npm:^4.4.0":"#;
+    let result = parse_descriptor_line(input);
+
+    match result {
+      Ok((remaining, descriptors)) => {
+        println!("Success! Remaining: '{}', Descriptors: {}", remaining, descriptors.len());
+        assert_eq!(remaining, "");
+        assert_eq!(descriptors.len(), 2);
+      }
+      Err(e) => {
+        println!("ERROR: {:?}", e);
+        panic!("Failed to parse adobe css tools descriptor: {:?}", e);
+      }
+    }
+  }
+
+  #[test]
+  fn test_adobe_css_tools_full_entry() {
+    let input = r#""@adobe/css-tools@npm:^4.0.1, @adobe/css-tools@npm:^4.4.0":
+  version: 4.4.0
+  resolution: "@adobe/css-tools@npm:4.4.0"
+  checksum: 10/9c6315fe9efa5075d6ddb6ded7a1424bc9c41a01f2314b6bdcc368723985fe161008d03ddcc2b27b2da50cb9c14190fbce965d15cefe5f9a31bdd43f35b52115
+  languageName: node
+  linkType: hard
+
+"#;
+    let result = parse_package_entry(input);
+
+    match result {
+      Ok((remaining, (descriptors, package))) => {
+        println!("Success! Descriptors: {}", descriptors.len());
+        println!("Package version: {:?}", package.version);
+        println!("Remaining length: {}", remaining.len());
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(package.version, Some("4.4.0"));
+      }
+      Err(e) => {
+        println!("ERROR: {:?}", e);
+        panic!("Failed to parse adobe css tools entry: {:?}", e);
+      }
+    }
+  }
+
+  #[test]
+  fn test_lockfile_with_adobe_css_tools() {
+    let input = r#"# This file is generated by running "yarn install" inside your project.
+# Manual changes might be lost - proceed with caution!
+
+__metadata:
+  version: 8
+  cacheKey: 10
+
+"@adobe/css-tools@npm:^4.0.1, @adobe/css-tools@npm:^4.4.0":
+  version: 4.4.0
+  resolution: "@adobe/css-tools@npm:4.4.0"
+  checksum: 10/9c6315fe9efa5075d6ddb6ded7a1424bc9c41a01f2314b6bdcc368723985fe161008d03ddcc2b27b2da50cb9c14190fbce965d15cefe5f9a31bdd43f35b52115
+  languageName: node
+  linkType: hard
+
+"@airbnb/node-memwatch@npm:^3.0.0":
+  version: 3.0.0
+  resolution: "@airbnb/node-memwatch@npm:3.0.0"
+  languageName: node
+  linkType: hard
+
+"#;
+    let result = parse_lockfile(input);
+
+    match result {
+      Ok((remaining, lockfile)) => {
+        println!("Success! Entries: {}", lockfile.entries.len());
+        println!("Remaining length: {}", remaining.len());
+        assert_eq!(lockfile.entries.len(), 2);
+      }
+      Err(e) => {
+        println!("ERROR: {:?}", e);
+        panic!("Failed to parse lockfile: {:?}", e);
+      }
+    }
+  }
+
+  // ============================================================================
+  // BUG VALIDATION TESTS
+  // ============================================================================
+
+  /// BUG #2: Test multi-resolution entries (entries with commas in descriptor)
+  #[test]
+  fn test_bug_multi_resolution_entries() {
+    let input = r#""@adobe/css-tools@npm:^4.0.1, @adobe/css-tools@npm:^4.4.0":
+  version: 4.4.0
+  resolution: "@adobe/css-tools@npm:4.4.0"
+  languageName: node
+  linkType: hard
+
+"#;
+
+    let result = parse_package_entry(input);
+    assert!(result.is_ok(), "Package entry should parse");
+    let (_, (descriptors, _)) = result.unwrap();
+
+    // VALIDATION: Should have 2 descriptors (one for each comma-separated version)
+    assert_eq!(descriptors.len(), 2,
+      "Multi-resolution descriptor should parse to 2 descriptors, got {}",
+      descriptors.len());
+  }
+
+  /// BUG #1: Test that dependencies with multiple entries work
+  #[test]
+  fn test_bug_multiple_dependencies() {
+    let input = r#"  version: 1.0.0
+  resolution: "pkg@npm:1.0.0"
+  dependencies:
+    dep-a: ^1.0.0
+    dep-b: ^2.0.0
+    dep-c: ^3.0.0
+  languageName: node
+  linkType: hard
+"#;
+
+    let result = parse_package_properties(input);
+    assert!(result.is_ok(), "Should parse package properties");
+    let (_, package) = result.unwrap();
+
+    // All 3 dependencies should be parsed
+    assert_eq!(package.dependencies.len(), 3,
+      "Should have 3 dependencies, but got {}", package.dependencies.len());
   }
 }
