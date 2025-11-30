@@ -12,7 +12,8 @@ publish = false
 berry = { workspace = true }
 
 [dev-dependencies]
-rstest = { workspace = true }
+rstest           = { workspace = true }
+yarn-lock-parser = "0.12"
 
 [lints]
 workspace = true
