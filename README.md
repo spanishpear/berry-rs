@@ -1,17 +1,8 @@
 # Berry - High-Performance Yarn Lockfile Parser
 
-A high-performance parser for Yarn v3/v4 lockfiles, built with Rust and nom. This parser focuses on performance, with minimal allocation and future use in WASM or with napi-rs.
+A high-performance parser for Yarn v3/v4 lockfiles. This parser focuses on performance, with minimal allocation and future use in WASM or with napi-rs.
 
-## Performance
-
-The parser is designed for high performance with minimal memory usage:
-
-- Small files (~1KB): ~6-7 microseconds
-- Medium files (~2KB): ~2-3 microseconds
-- Large files (~40KB): ~5 microseconds
-- Memory usage: Typically 0-20KB heap usage depending on fixture complexity
-
-## Architecture
+## Layout
 
 ```
 crates/
@@ -49,19 +40,7 @@ cargo bench --package berry-bench
 cargo bench --package berry-bench --bench parser_benchmarks -- --quick
 ```
 
-### Benchmark Categories
-
-- Fixture Parsing: Different file sizes and complexities
-- Memory Usage: Heap usage tracking and analysis
-- Zero-Allocation Validation: Memory allocation verification
-- Input Characteristics: Various lockfile formats and features
-
 ## Development
-
-### Prerequisites
-
-- Rust 1.70+ (2021 edition)
-- Cargo with workspace support
 
 ### Building
 
@@ -77,10 +56,10 @@ cargo build --release --workspace
 
 ```bash
 # Run all testss
-cargo test --workspace
+cargo nextest run
 
 # Run integration tests
-cargo test --package berry-test
+cargo nextest run -package berry-test
 
 # Run benchmarks
 cargo bench --workspace
@@ -92,61 +71,7 @@ cargo bench --workspace
 # Check code quality
 cargo clippy --workspace
 
-# Format code
-cargo fmt --workspace
 ```
-
-## Project Structure
-
-### Core Parser (`crates/berry-core/`)
-
-- `src/parse.rs` - Main parsing logic with zero-allocation optimizations
-- `src/package.rs` - Package struct with dependency storage
-- `src/ident.rs` - Ident and Descriptor structs for dependencies
-- `src/lockfile.rs` - Lockfile struct and metadata parsing
-- `src/metadata.rs` - Metadata struct for lockfile version info
-
-### Testing (`crates/berry-test/`)
-
-- Integration tests with real Yarn lockfile fixtures
-- Automatic fixture discovery and validation
-- End-to-end parsing verification
-
-### Benchmarking (`crates/berry-bench/` & `crates/berry-bench-bin/`)
-
-- Criterion-based microbenchmarks for statistical analysis
-- CLI tool for quick performance testing
-- Memory usage tracking and heap analysis
-- Performance regression detection
-
-## Current Status
-
-- Production Ready
-
-- All tests passing (23/23)
-- Zero clippy warnings
-- Zero compilation errors
-- Zero-allocation parsing pipeline
-- Modern nom API usage
-- Comprehensive test coverage
-
-- In Development
-
-- Advanced lockfile features (multi-descriptors, meta fields)
-- WASM compilation support
-- Node.js bindings with napi-rs
-- CI/CD benchmarking pipeline
-
-## Performance Monitoring
-
-The benchmarking infrastructure automatically detects:
-
-- Performance regressions (>50% slower than baseline)
-- Statistical significance in benchmark results
-- Memory usage patterns and allocation tracking
-- Zero-allocation violations during parsing
-
-## Contributing
 
 See [CONTRIBUTING.md](dev-docs/CONTRIBUTING.md) for development guidelines and benchmarking information.
 
