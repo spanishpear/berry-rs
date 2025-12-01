@@ -182,6 +182,9 @@ fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
   // Everything after @ until comma or quote is the full range (including protocol if present)
   let (remaining, full_range) = take_while1(|c: char| c != ',' && c != '"').parse(after_at)?;
 
+  // Trim trailing whitespace from range to match JS parser behavior (e.g., "npm:^1.0.4 " -> "npm:^1.0.4")
+  let full_range = full_range.trim_end();
+
   Ok((remaining, (name_part, full_range)))
 }
 
@@ -980,5 +983,21 @@ __metadata:
       descriptor.range(),
       "patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd.patch"
     );
+  }
+
+  #[test]
+  fn test_descriptor_range_trims_trailing_whitespace() {
+    // Some lockfiles have trailing spaces in descriptor ranges (e.g., "@oclif/screen@npm^1.0.4 ")
+    let input = r#""@oclif/screen@npm:^1.0.4 ":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "screen");
+    assert_eq!(descriptor.ident().scope(), Some("@oclif"));
+    // Trailing whitespace should be trimmed to match JS parser behavior
+    assert_eq!(descriptor.range(), "npm:^1.0.4");
   }
 }
