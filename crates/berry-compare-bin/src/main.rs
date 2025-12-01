@@ -37,9 +37,26 @@ struct CompareEntry {
   language_name: String,
   link_type: String,
   checksum: Option<String>,
+  conditions: Option<String>,
   dependencies: HashMap<String, String>,
+  dependencies_meta: HashMap<String, DependencyMetaCompare>,
   peer_dependencies: HashMap<String, String>,
+  peer_dependencies_meta: HashMap<String, PeerDependencyMetaCompare>,
   bin: HashMap<String, String>,
+}
+
+/// Simplified dependency meta for comparison
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct DependencyMetaCompare {
+  built: Option<bool>,
+  optional: Option<bool>,
+  unplugged: Option<bool>,
+}
+
+/// Simplified peer dependency meta for comparison
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct PeerDependencyMetaCompare {
+  optional: bool,
 }
 
 /// Output from the Node.js parser script
@@ -97,6 +114,46 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
     .collect();
 
+  let dependencies_meta: HashMap<String, DependencyMetaCompare> = entry
+    .package
+    .dependencies_meta
+    .iter()
+    .filter_map(|(ident, meta)| {
+      meta.as_ref().map(|m| {
+        let name = match ident.scope() {
+          Some(scope) => format!("{}/{}", scope, ident.name()),
+          None => ident.name().to_string(),
+        };
+        (
+          name,
+          DependencyMetaCompare {
+            built: m.built,
+            optional: m.optional,
+            unplugged: m.unplugged,
+          },
+        )
+      })
+    })
+    .collect();
+
+  let peer_dependencies_meta: HashMap<String, PeerDependencyMetaCompare> = entry
+    .package
+    .peer_dependencies_meta
+    .iter()
+    .map(|(ident, meta)| {
+      let name = match ident.scope() {
+        Some(scope) => format!("{}/{}", scope, ident.name()),
+        None => ident.name().to_string(),
+      };
+      (
+        name,
+        PeerDependencyMetaCompare {
+          optional: meta.optional,
+        },
+      )
+    })
+    .collect();
+
   CompareEntry {
     descriptors,
     version: entry.package.version.map(String::from),
@@ -107,8 +164,11 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
       berry::package::LinkType::Soft => "soft".to_string(),
     },
     checksum: entry.package.checksum.map(String::from),
+    conditions: entry.package.conditions.map(String::from),
     dependencies,
+    dependencies_meta,
     peer_dependencies,
+    peer_dependencies_meta,
     bin,
   }
 }
@@ -158,6 +218,37 @@ for (const [key, value] of Object.entries(parsed)) {{
         }}
     }}
 
+    const dependenciesMeta = {{}};
+    if (value.dependenciesMeta) {{
+        for (const [name, meta] of Object.entries(value.dependenciesMeta)) {{
+            // Handle string "true"/"false" or boolean values
+            const toBoolOrNull = (v) => {{
+                if (v === undefined) return null;
+                if (typeof v === 'string') return v === 'true';
+                return v;
+            }};
+            dependenciesMeta[name] = {{
+                built: toBoolOrNull(meta.built),
+                optional: toBoolOrNull(meta.optional),
+                unplugged: toBoolOrNull(meta.unplugged),
+            }};
+        }}
+    }}
+
+    const peerDependenciesMeta = {{}};
+    if (value.peerDependenciesMeta) {{
+        for (const [name, meta] of Object.entries(value.peerDependenciesMeta)) {{
+            // Handle string "true"/"false" or boolean values
+            let optional = meta.optional;
+            if (typeof optional === 'string') {{
+                optional = optional === 'true';
+            }}
+            peerDependenciesMeta[name] = {{
+                optional: optional || false,
+            }};
+        }}
+    }}
+
     entries.push({{
         descriptors,
         version: value.version ? String(value.version) : null,
@@ -165,8 +256,11 @@ for (const [key, value] of Object.entries(parsed)) {{
         language_name: value.languageName || 'unknown',
         link_type: value.linkType || 'hard',
         checksum: value.checksum ? String(value.checksum) : null,
+        conditions: value.conditions ? String(value.conditions) : null,
         dependencies,
+        dependencies_meta: dependenciesMeta,
         peer_dependencies: peerDependencies,
+        peer_dependencies_meta: peerDependenciesMeta,
         bin,
     }});
 }}
@@ -416,6 +510,80 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
             field: format!("bin[{}]", bin_name),
             rust_value: "(missing)".to_string(),
             js_value: js_path.clone(),
+          });
+        }
+      }
+
+      // Compare conditions
+      if rust_entry.conditions != js_entry.conditions {
+        differences.push(Difference {
+          resolution: (*resolution).to_string(),
+          field: "conditions".to_string(),
+          rust_value: format!("{:?}", rust_entry.conditions),
+          js_value: format!("{:?}", js_entry.conditions),
+        });
+      }
+
+      // Compare dependencies_meta
+      for (dep_name, rust_meta) in &rust_entry.dependencies_meta {
+        if let Some(js_meta) = js_entry.dependencies_meta.get(dep_name) {
+          if rust_meta != js_meta {
+            differences.push(Difference {
+              resolution: (*resolution).to_string(),
+              field: format!("dependenciesMeta[{}]", dep_name),
+              rust_value: format!("{:?}", rust_meta),
+              js_value: format!("{:?}", js_meta),
+            });
+          }
+        } else {
+          differences.push(Difference {
+            resolution: (*resolution).to_string(),
+            field: format!("dependenciesMeta[{}]", dep_name),
+            rust_value: format!("{:?}", rust_meta),
+            js_value: "(missing)".to_string(),
+          });
+        }
+      }
+
+      for (dep_name, js_meta) in &js_entry.dependencies_meta {
+        if !rust_entry.dependencies_meta.contains_key(dep_name) {
+          differences.push(Difference {
+            resolution: (*resolution).to_string(),
+            field: format!("dependenciesMeta[{}]", dep_name),
+            rust_value: "(missing)".to_string(),
+            js_value: format!("{:?}", js_meta),
+          });
+        }
+      }
+
+      // Compare peer_dependencies_meta
+      for (dep_name, rust_meta) in &rust_entry.peer_dependencies_meta {
+        if let Some(js_meta) = js_entry.peer_dependencies_meta.get(dep_name) {
+          if rust_meta != js_meta {
+            differences.push(Difference {
+              resolution: (*resolution).to_string(),
+              field: format!("peerDependenciesMeta[{}]", dep_name),
+              rust_value: format!("{:?}", rust_meta),
+              js_value: format!("{:?}", js_meta),
+            });
+          }
+        } else {
+          differences.push(Difference {
+            resolution: (*resolution).to_string(),
+            field: format!("peerDependenciesMeta[{}]", dep_name),
+            rust_value: format!("{:?}", rust_meta),
+            js_value: "(missing)".to_string(),
+          });
+        }
+      }
+
+      for (dep_name, js_meta) in &js_entry.peer_dependencies_meta {
+        if !rust_entry.peer_dependencies_meta.contains_key(dep_name) {
+          differences.push(Difference {
+            resolution: (*resolution).to_string(),
+            field: format!("peerDependenciesMeta[{}]", dep_name),
+            rust_value: "(missing)".to_string(),
+            js_value: format!("{:?}", js_meta),
           });
         }
       }
