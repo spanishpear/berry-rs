@@ -135,3 +135,5 @@ npm/
 .cursor
 
 profile.json.gz
+
+fixtures/*afm*.lock

@@ -95,7 +95,7 @@ pub fn parse_package_entry(
 }
 
 /// Parse a package descriptor line like: "debug@npm:1.0.0":, eslint-config-turbo@latest:, or ? "conditional@npm:1.0.0":
-/// Uses SmallVec<[Descriptor; 4]> since most descriptor lines have 1-3 descriptors
+/// Uses `SmallVec<[Descriptor; 4]>` since most descriptor lines have 1-3 descriptors
 pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<'_>; 4]>> {
   // Check for optional '? ' prefix for wrapped-line descriptors
   let (rest, has_line_wrap_marker) = opt(tag("? ")).parse(input)?;
@@ -171,7 +171,7 @@ fn convert_to_descriptor<'a>((name_part, full_range): (&'a str, &'a str)) -> Des
 
 /// Parse a single descriptor string like "debug@npm:1.0.0", "c@*", or "is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"
 /// Returns borrowed strings to avoid allocations during parsing
-/// Returns (name_part, full_range) where full_range includes protocol if present (e.g., "npm:^1.0.0")
+/// Returns (`name_part`, `full_range`) where `full_range` includes protocol if present (e.g., "npm:^1.0.0")
 fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
   // Parse package name first
   let (after_name, name_part) = parse_package_name(input)?;
@@ -322,7 +322,7 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
   .parse(input)?;
 
   // Consume any trailing whitespace and blank lines
-  let (rest, _) = fold_many0(
+  let (rest, ()) = fold_many0(
     alt((tag("\n"), tag(" "), tag("\t"), tag("\r"))),
     || (),
     |(), _| (),

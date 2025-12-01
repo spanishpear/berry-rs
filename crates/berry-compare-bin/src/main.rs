@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -65,17 +65,17 @@ struct JsParserOutput {
   entries: Vec<CompareEntry>,
 }
 
-/// Convert a berry Entry to CompareEntry
+/// Convert a berry Entry to `CompareEntry`
 fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
   let mut descriptors: Vec<String> = entry
     .descriptors
     .iter()
     .map(|d| {
       let ident = d.ident();
-      let name = match ident.scope() {
-        Some(scope) => format!("{}/{}", scope, ident.name()),
-        None => ident.name().to_string(),
-      };
+      let name = ident.scope().map_or_else(
+        || ident.name().to_string(),
+        |scope| format!("{}/{}", scope, ident.name()),
+      );
       format!("{}@{}", name, d.range())
     })
     .collect();
@@ -86,10 +86,10 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .dependencies
     .iter()
     .map(|(ident, desc)| {
-      let name = match ident.scope() {
-        Some(scope) => format!("{}/{}", scope, ident.name()),
-        None => ident.name().to_string(),
-      };
+      let name = ident.scope().map_or_else(
+        || ident.name().to_string(),
+        |scope| format!("{}/{}", scope, ident.name()),
+      );
       (name, desc.range().to_string())
     })
     .collect();
@@ -99,10 +99,10 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .peer_dependencies
     .iter()
     .map(|(ident, desc)| {
-      let name = match ident.scope() {
-        Some(scope) => format!("{}/{}", scope, ident.name()),
-        None => ident.name().to_string(),
-      };
+      let name = ident.scope().map_or_else(
+        || ident.name().to_string(),
+        |scope| format!("{}/{}", scope, ident.name()),
+      );
       (name, desc.range().to_string())
     })
     .collect();
@@ -174,10 +174,10 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
 }
 
 /// Generate a Node.js script to parse the given lockfile
-fn generate_js_script(fixture_path: &PathBuf) -> String {
+fn generate_js_script(fixture_path: &Path) -> String {
   let path_str = fixture_path.display();
   format!(
-    r#"const fs = require('fs');
+    r"const fs = require('fs');
 
 let parseSyml;
 try {{
@@ -266,7 +266,7 @@ for (const [key, value] of Object.entries(parsed)) {{
 }}
 
 console.log(JSON.stringify({{ entries }}));
-"#
+"
   )
 }
 
@@ -282,7 +282,7 @@ fn get_npm_global_prefix() -> Option<String> {
   }
 }
 
-fn run_js_parser(fixture_path: &PathBuf) -> Result<JsParserOutput, String> {
+fn run_js_parser(fixture_path: &Path) -> Result<JsParserOutput, String> {
   let script = generate_js_script(fixture_path);
   let script_path = std::env::temp_dir().join("berry-compare-parser.js");
   fs::write(&script_path, &script).map_err(|e| format!("Failed to write temp script: {e}"))?;
@@ -295,7 +295,7 @@ fn run_js_parser(fixture_path: &PathBuf) -> Result<JsParserOutput, String> {
 
   // Set NODE_PATH to include global node_modules
   if let Some(prefix) = get_npm_global_prefix() {
-    let node_path = format!("{}/lib/node_modules", prefix);
+    let node_path = format!("{prefix}/lib/node_modules");
     cmd.env("NODE_PATH", node_path);
   }
 
@@ -331,7 +331,7 @@ fn time_rust_parser(contents: &str, iterations: usize) -> (Vec<Entry<'_>>, f64) 
   (entries, avg_time)
 }
 
-fn time_js_parser(fixture_path: &PathBuf, iterations: usize) -> (JsParserOutput, f64) {
+fn time_js_parser(fixture_path: &Path, iterations: usize) -> (JsParserOutput, f64) {
   let mut total_time = 0.0;
   let mut output = None;
 
@@ -354,6 +354,7 @@ struct Difference {
   js_value: String,
 }
 
+#[allow(clippy::too_many_lines)]
 fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -> Vec<Difference> {
   let mut differences = Vec::new();
 
@@ -424,7 +425,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
           if rust_range != js_range {
             differences.push(Difference {
               resolution: (*resolution).to_string(),
-              field: format!("dependencies[{}]", dep_name),
+              field: format!("dependencies[{dep_name}]"),
               rust_value: rust_range.clone(),
               js_value: js_range.clone(),
             });
@@ -432,7 +433,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         } else {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("dependencies[{}]", dep_name),
+            field: format!("dependencies[{dep_name}]"),
             rust_value: rust_range.clone(),
             js_value: "(missing)".to_string(),
           });
@@ -443,7 +444,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         if !rust_entry.dependencies.contains_key(dep_name) {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("dependencies[{}]", dep_name),
+            field: format!("dependencies[{dep_name}]"),
             rust_value: "(missing)".to_string(),
             js_value: js_range.clone(),
           });
@@ -456,7 +457,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
           if rust_range != js_range {
             differences.push(Difference {
               resolution: (*resolution).to_string(),
-              field: format!("peerDependencies[{}]", dep_name),
+              field: format!("peerDependencies[{dep_name}]"),
               rust_value: rust_range.clone(),
               js_value: js_range.clone(),
             });
@@ -464,7 +465,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         } else {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("peerDependencies[{}]", dep_name),
+            field: format!("peerDependencies[{dep_name}]"),
             rust_value: rust_range.clone(),
             js_value: "(missing)".to_string(),
           });
@@ -475,7 +476,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         if !rust_entry.peer_dependencies.contains_key(dep_name) {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("peerDependencies[{}]", dep_name),
+            field: format!("peerDependencies[{dep_name}]"),
             rust_value: "(missing)".to_string(),
             js_value: js_range.clone(),
           });
@@ -488,7 +489,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
           if rust_path != js_path {
             differences.push(Difference {
               resolution: (*resolution).to_string(),
-              field: format!("bin[{}]", bin_name),
+              field: format!("bin[{bin_name}]"),
               rust_value: rust_path.clone(),
               js_value: js_path.clone(),
             });
@@ -496,7 +497,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         } else {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("bin[{}]", bin_name),
+            field: format!("bin[{bin_name}]"),
             rust_value: rust_path.clone(),
             js_value: "(missing)".to_string(),
           });
@@ -507,7 +508,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         if !rust_entry.bin.contains_key(bin_name) {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("bin[{}]", bin_name),
+            field: format!("bin[{bin_name}]"),
             rust_value: "(missing)".to_string(),
             js_value: js_path.clone(),
           });
@@ -598,7 +599,7 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
   }
 
   // Check for entries in JS but not in Rust
-  for (resolution, _) in &js_by_res {
+  for resolution in js_by_res.keys() {
     if !rust_by_res.contains_key(resolution) {
       differences.push(Difference {
         resolution: (*resolution).to_string(),
@@ -616,7 +617,11 @@ fn main() {
   let args = Args::parse();
 
   let fixture_path = args.fixture.canonicalize().unwrap_or_else(|e| {
-    eprintln!("Error: Cannot find fixture file {:?}: {}", args.fixture, e);
+    eprintln!(
+      "Error: Cannot find fixture file {}: {}",
+      args.fixture.display(),
+      e
+    );
     std::process::exit(1);
   });
 
@@ -624,7 +629,7 @@ fn main() {
   let file_size = contents.len();
 
   println!("Comparing parsers for: {}", fixture_path.display());
-  println!("File size: {} bytes", file_size);
+  println!("File size: {file_size} bytes");
   println!("Iterations: {}", args.iterations);
   println!();
 
@@ -645,10 +650,10 @@ fn main() {
 
   println!();
   println!("=== Performance ===");
-  println!("Rust:  {:.3} ms avg", rust_time);
-  println!("JS:    {:.3} ms avg", js_time);
+  println!("Rust:  {rust_time:.3} ms avg");
+  println!("JS:    {js_time:.3} ms avg");
   let speedup = js_time / rust_time;
-  println!("Speedup: {:.2}x", speedup);
+  println!("Speedup: {speedup:.2}x");
 
   println!();
   println!("=== Entry Counts ===");
