@@ -75,7 +75,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "berry"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "nom",
  "smallvec",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "berry-bench"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "berry",
  "berry-test",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "berry-bench-bin"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "berry",
  "berry-test",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "berry-compare-bin"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "berry",
  "berry-test",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "berry-dump-bin"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "berry",
  "clap",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "berry-test"
-version = "0.5.0"
+version = "0.5.1-beta0-js.0"
 dependencies = [
  "berry",
  "rstest",
