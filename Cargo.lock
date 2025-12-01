@@ -104,6 +104,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-compare-bin"
+version = "0.5.0"
+dependencies = [
+ "berry",
+ "berry-test",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "berry-dump-bin"
 version = "0.5.0"
 dependencies = [
