@@ -120,10 +120,7 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .iter()
     .filter_map(|(ident, meta)| {
       meta.as_ref().map(|m| {
-        let name = match ident.scope() {
-          Some(scope) => format!("{}/{}", scope, ident.name()),
-          None => ident.name().to_string(),
-        };
+        let name = ident.scope().map_or_else(|| ident.name().to_string(), |scope| format!("{}/{}", scope, ident.name()));
         (
           name,
           DependencyMetaCompare {
@@ -141,10 +138,7 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .peer_dependencies_meta
     .iter()
     .map(|(ident, meta)| {
-      let name = match ident.scope() {
-        Some(scope) => format!("{}/{}", scope, ident.name()),
-        None => ident.name().to_string(),
-      };
+      let name = ident.scope().map_or_else(|| ident.name().to_string(), |scope| format!("{}/{}", scope, ident.name()));
       (
         name,
         PeerDependencyMetaCompare {
@@ -531,16 +525,16 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
           if rust_meta != js_meta {
             differences.push(Difference {
               resolution: (*resolution).to_string(),
-              field: format!("dependenciesMeta[{}]", dep_name),
-              rust_value: format!("{:?}", rust_meta),
-              js_value: format!("{:?}", js_meta),
+              field: format!("dependenciesMeta[{dep_name}]"),
+              rust_value: format!("{rust_meta:?}"),
+              js_value: format!("{js_meta:?}"),
             });
           }
         } else {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("dependenciesMeta[{}]", dep_name),
-            rust_value: format!("{:?}", rust_meta),
+            field: format!("dependenciesMeta[{dep_name}]"),
+            rust_value: format!("{rust_meta:?}"),
             js_value: "(missing)".to_string(),
           });
         }
@@ -550,9 +544,9 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         if !rust_entry.dependencies_meta.contains_key(dep_name) {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("dependenciesMeta[{}]", dep_name),
+            field: format!("dependenciesMeta[{dep_name}]"),
             rust_value: "(missing)".to_string(),
-            js_value: format!("{:?}", js_meta),
+            js_value: format!("{js_meta:?}"),
           });
         }
       }
@@ -563,16 +557,16 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
           if rust_meta != js_meta {
             differences.push(Difference {
               resolution: (*resolution).to_string(),
-              field: format!("peerDependenciesMeta[{}]", dep_name),
-              rust_value: format!("{:?}", rust_meta),
-              js_value: format!("{:?}", js_meta),
+              field: format!("peerDependenciesMeta[{dep_name}]"),
+              rust_value: format!("{rust_meta:?}"),
+              js_value: format!("{js_meta:?}"),
             });
           }
         } else {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("peerDependenciesMeta[{}]", dep_name),
-            rust_value: format!("{:?}", rust_meta),
+            field: format!("peerDependenciesMeta[{dep_name}]"),
+            rust_value: format!("{rust_meta:?}"),
             js_value: "(missing)".to_string(),
           });
         }
@@ -582,9 +576,9 @@ fn compare_entries(rust_entries: &[CompareEntry], js_entries: &[CompareEntry]) -
         if !rust_entry.peer_dependencies_meta.contains_key(dep_name) {
           differences.push(Difference {
             resolution: (*resolution).to_string(),
-            field: format!("peerDependenciesMeta[{}]", dep_name),
+            field: format!("peerDependenciesMeta[{dep_name}]"),
             rust_value: "(missing)".to_string(),
-            js_value: format!("{:?}", js_meta),
+            js_value: format!("{js_meta:?}"),
           });
         }
       }
