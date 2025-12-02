@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    let version_ratio = entries_with_version as f64 / lockfile.entries.len() as f64;
+    let version_ratio = f64::from(entries_with_version) / lockfile.entries.len() as f64;
     assert!(
       version_ratio > 0.9,
       "Too few entries have version: {:.1}%",
@@ -409,13 +409,13 @@ __metadata:
         match parse_lockfile(content) {
             Ok((remaining, lockfile)) => {
                 println!("Successfully parsed {} entries", lockfile.entries.len());
-                println!("Remaining content: {:?}", remaining);
+                println!("Remaining content: {remaining:?}");
                 
                 assert_eq!(lockfile.entries.len(), 5, "Should parse all 5 entries");
                 assert!(remaining.trim().is_empty(), "Should consume entire file");
             }
             Err(e) => {
-                panic!("Parse failed: {:?}", e);
+                panic!("Parse failed: {e:?}");
             }
         }
     }
@@ -506,7 +506,7 @@ __metadata:
         match parse_lockfile(content) {
             Ok((remaining, lockfile)) => {
                 println!("Successfully parsed {} entries", lockfile.entries.len());
-                println!("Remaining: {:?}", remaining);
+                println!("Remaining: {remaining:?}");
                 
                 assert_eq!(lockfile.entries.len(), 10, "Should parse all 10 entries");
                 assert!(remaining.trim().is_empty(), "Should consume entire file");
@@ -517,7 +517,7 @@ __metadata:
                 assert!(!lockfile.entries[7].package.bin.is_empty(), "entry8 should have bin");
             }
             Err(e) => {
-                panic!("Parse failed: {:?}", e);
+                panic!("Parse failed: {e:?}");
             }
         }
     }
@@ -576,7 +576,7 @@ __metadata:
                 assert!(remaining.trim().is_empty(), "Should consume entire file");
             }
             Err(e) => {
-                panic!("Parse failed: {:?}", e);
+                panic!("Parse failed: {e:?}");
             }
         }
     }
@@ -620,7 +620,7 @@ mod test_afm_full {
                 assert!(!css_tools_entries.is_empty(), "Should find @adobe/css-tools entries");
             }
             Err(e) => {
-                panic!("Parse failed: {:?}", e);
+                panic!("Parse failed: {e:?}");
             }
         }
     }

@@ -61,8 +61,6 @@ fn parse_entries(lockfile: Lockfile) -> BTreeMap<String, Value> {
   let mut result = BTreeMap::new();
 
   for entry in lockfile.entries {
-    // Create a single package object that will be shared across all descriptors.
-    // This is more efficient than cloning, but we'll need to be careful with the design.
     let mut pkg_obj = Map::new();
 
     if let Some(version) = entry.package.version {
@@ -70,10 +68,7 @@ fn parse_entries(lockfile: Lockfile) -> BTreeMap<String, Value> {
     }
 
     if let Some(resolution) = entry.package.resolution {
-      pkg_obj.insert(
-        "resolution".to_owned(),
-        Value::String(resolution.to_owned()),
-      );
+      pkg_obj.insert("resolution".to_owned(), Value::String(resolution.to_owned()));
     }
 
     if !entry.package.dependencies.is_empty() {
@@ -83,14 +78,10 @@ fn parse_entries(lockfile: Lockfile) -> BTreeMap<String, Value> {
           || dep_name.name.to_string(),
           |scope| format!("{}/{}", scope, dep_name.name),
         );
-        deps.insert(
-          dep_ident_str,
-          Value::String(dep_range.range.raw.to_string()),
-        );
+        deps.insert(dep_ident_str, Value::String(dep_range.range.raw.to_string()));
       }
       pkg_obj.insert("dependencies".to_owned(), Value::Object(deps));
 
-      // Add dependenciesMeta if any dependency has metadata
       let mut deps_meta = Map::new();
       for (dep_name, dep_meta_info) in &entry.package.dependencies_meta {
         if let Some(meta) = dep_meta_info {
@@ -116,31 +107,22 @@ fn parse_entries(lockfile: Lockfile) -> BTreeMap<String, Value> {
     if !entry.package.peer_dependencies.is_empty() {
       let mut peers = Map::new();
       for (peer_name, peer_meta) in &entry.package.peer_dependencies {
-        let peer_ident_str = if let Some(scope) = peer_name.scope {
-          format!("{}/{}", scope, peer_name.name)
-        } else {
-          peer_name.name.to_string()
-        };
-        peers.insert(
-          peer_ident_str,
-          Value::String(peer_meta.range.raw.to_string()),
+        let peer_ident_str = peer_name.scope.map_or_else(
+          || peer_name.name.to_string(),
+          |scope| format!("{}/{}", scope, peer_name.name),
         );
+        peers.insert(peer_ident_str, Value::String(peer_meta.range.raw.to_string()));
       }
       pkg_obj.insert("peerDependencies".to_owned(), Value::Object(peers));
 
-      // Add peerDependenciesMeta if any peer dependency has metadata
       let mut peers_meta = Map::new();
       for (peer_name, peer_meta_info) in &entry.package.peer_dependencies_meta {
-        let peer_ident_str = if let Some(scope) = peer_name.scope {
-          format!("{}/{}", scope, peer_name.name)
-        } else {
-          peer_name.name.to_string()
-        };
-        let mut meta_obj = Map::new();
-        meta_obj.insert(
-          "optional".to_string(),
-          Value::String(peer_meta_info.optional.to_string()),
+        let peer_ident_str = peer_name.scope.map_or_else(
+          || peer_name.name.to_string(),
+          |scope| format!("{}/{}", scope, peer_name.name),
         );
+        let mut meta_obj = Map::new();
+        meta_obj.insert("optional".to_string(), Value::String(peer_meta_info.optional.to_string()));
         peers_meta.insert(peer_ident_str, Value::Object(meta_obj));
       }
       if !peers_meta.is_empty() {
@@ -153,17 +135,13 @@ fn parse_entries(lockfile: Lockfile) -> BTreeMap<String, Value> {
     }
 
     if let Some(conditions) = entry.package.conditions {
-      pkg_obj.insert(
-        "conditions".to_owned(),
-        Value::String(conditions.to_owned()),
-      );
+      pkg_obj.insert("conditions".to_owned(), Value::String(conditions.to_owned()));
     }
 
-    // Add bin entries if present
     if !entry.package.bin.is_empty() {
       let mut bin_obj = Map::new();
       for (bin_name, bin_path) in &entry.package.bin {
-        bin_obj.insert((*bin_name).to_string(), Value::String(bin_path.to_string()));
+        bin_obj.insert((*bin_name).to_string(), Value::String((*bin_path).to_string()));
       }
       pkg_obj.insert("bin".to_owned(), Value::Object(bin_obj));
     }
@@ -213,28 +191,19 @@ fn format_ident_and_range_with_context(
   descriptor: &berry::ident::Descriptor,
   has_non_npm_protocol: bool,
 ) -> String {
-  let range_with_protocol = if descriptor.range.raw.contains(':') {
-    // Non-npm protocol already preserved by parser - keep as-is
-    descriptor.range.raw.to_string()
-  } else if has_non_npm_protocol {
-    // When mixed with non-npm protocols, omit the "npm:" prefix for npm descriptors
-    descriptor.range.raw.to_string()
-  } else if descriptor.range.raw == "latest" {
-    // Special case: "latest" is never prefixed with "npm:" in Yarn's format
+  let range_with_protocol = if descriptor.range.raw.contains(':')
+    || has_non_npm_protocol
+    || descriptor.range.raw == "latest"
+  {
     descriptor.range.raw.to_string()
   } else {
-    // Regular npm versions/ranges - include "npm:" prefix
     format!("npm:{}", descriptor.range.raw)
   };
 
-  if let Some(scope) = descriptor.ident.scope {
-    format!(
-      "{}/{}@{}",
-      scope, descriptor.ident.name, range_with_protocol
-    )
-  } else {
-    format!("{}@{}", descriptor.ident.name, range_with_protocol)
-  }
+  descriptor.ident.scope.map_or_else(
+    || format!("{}@{}", descriptor.ident.name, range_with_protocol),
+    |scope| format!("{}/{}@{}", scope, descriptor.ident.name, range_with_protocol),
+  )
 }
 
 /// Format a single descriptor (legacy - used when context not available)
@@ -258,7 +227,7 @@ fn parse_with_yarnpkg(lockfile_path: &PathBuf) -> anyhow::Result<BTreeMap<String
 
   if !output.status.success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    anyhow::bail!("@yarnpkg/parsers error:\n{}", stderr);
+    anyhow::bail!("@yarnpkg/parsers error:\n{stderr}");
   }
 
   let stdout = String::from_utf8(output.stdout)?;
@@ -309,15 +278,13 @@ fn compare_results(
 
   // Check for entries in yarnpkg but not in berry
   for key in yarnpkg.keys() {
-    if !berry.contains_key(key) {
-      if let Some(yarnpkg_value) = yarnpkg.get(key) {
-        differences.push(ComparisonDiff {
-          entry: key.clone(),
-          kind: DiffKind::OnlyInYarnpkg,
-          berry_value: None,
-          yarnpkg_value: Some(yarnpkg_value.clone()),
-        });
-      }
+    if !berry.contains_key(key) && let Some(yarnpkg_value) = yarnpkg.get(key) {
+      differences.push(ComparisonDiff {
+        entry: key.clone(),
+        kind: DiffKind::OnlyInYarnpkg,
+        berry_value: None,
+        yarnpkg_value: Some(yarnpkg_value.clone()),
+      });
     }
   }
 

@@ -137,3 +137,4 @@ npm/
 profile.json.gz
 
 fixtures/afm*
+.bench/

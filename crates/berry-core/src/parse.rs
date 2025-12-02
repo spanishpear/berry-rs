@@ -102,9 +102,9 @@ pub fn parse_package_entry(
   Ok((rest, (descriptors, package)))
 }
 
-/// Parse a package descriptor line like: "debug@npm:1.0.0":, eslint-config-turbo@latest:, or ? "conditional@npm:1.0.0":
-/// Uses `SmallVec<[Descriptor; 4]>` since most descriptor lines have 1-3 descriptors
-/// Uses `SmallVec`<[Descriptor; 4]> since most descriptor lines have 1-3 descriptors
+/// Parse a package descriptor line like: "debug@npm:1.0.0", eslint-config-turbo@latest, or ? "conditional@npm:1.0.0"
+///
+/// Uses `SmallVec<[Descriptor; 4]>` since most descriptor lines have 1-3 descriptors.
 pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<'_>; 4]>> {
   // Check for optional '? ' prefix for wrapped-line descriptors
   let (rest, has_line_wrap_marker) = opt(tag("? ")).parse(input)?;
@@ -264,11 +264,7 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
     // TODO(perf) could / should we use simd here for `trim`? Do we even need it??
     // Check if blank line (end of block)
     if line.trim().is_empty() {
-      remaining = if line_end < remaining.len() {
-        &remaining[line_end + 1..]
-      } else {
-        &remaining[line_end..]
-      };
+      remaining = advance_to_next_line(remaining, line_end);
       break;
     }
 
@@ -281,19 +277,12 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
       // Simple scalar properties
       if let Some(rest) = rest.strip_prefix("version:") {
         package.version = Some(rest.trim().trim_matches('"'));
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
       } else if let Some(rest) = rest.strip_prefix("resolution:") {
         // handle `resolution` field
         let raw = rest.trim().trim_matches('"');
         let at_index = if raw.starts_with('@') {
-          raw
-            .find('/')
-            .and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
+          raw.find('/').and_then(|slash| raw[slash..].find('@').map(|i| slash + i))
         } else {
           raw.find('@')
         };
@@ -304,62 +293,26 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
           package.resolution_locator = Some(Locator::new(ident, reference));
         }
         package.resolution = Some(raw);
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
       } else if let Some(rest) = rest.strip_prefix("languageName:") {
-        // handle `languageName` field
         package.language_name = rest.trim();
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
       } else if let Some(rest) = rest.strip_prefix("linkType:") {
         let link_type_str = rest.trim();
         package.link_type = LinkType::try_from(link_type_str)
           .unwrap_or_else(|()| panic!("Invalid link type: {link_type_str}"));
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
-        // handle `checksum` field
+        remaining = advance_to_next_line(remaining, line_end);
       } else if let Some(rest) = rest.strip_prefix("checksum:") {
         package.checksum = Some(rest.trim());
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
       } else if let Some(rest) = rest.strip_prefix("conditions:") {
-        // handle `conditions` field
         package.conditions = Some(rest.trim());
-        // Skip to next line for scalar properties
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
-      // Block properties (nested indented content)
-      // For block properties, skip the property header line first, THEN call the scanner
+        remaining = advance_to_next_line(remaining, line_end);
       } else if rest.strip_prefix("dependencies:").is_some() {
-        // Skip past the "dependencies:" line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
         let (new_remaining, dependencies) = parse_dependencies_block_scanner(remaining);
         remaining = new_remaining;
-        let mut deps_map =
-          FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
+        let mut deps_map = FxHashMap::with_capacity_and_hasher(dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in dependencies {
           let ident = parse_name_to_ident(dep_name);
           let descriptor = Descriptor::new(ident, dep_range);
@@ -367,16 +320,10 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.dependencies = deps_map;
       } else if rest.strip_prefix("peerDependencies:").is_some() {
-        // Skip past the "peerDependencies:" line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
         let (new_remaining, peer_dependencies) = parse_peer_dependencies_block_scanner(remaining);
         remaining = new_remaining;
-        let mut peer_deps_map =
-          FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
+        let mut peer_deps_map = FxHashMap::with_capacity_and_hasher(peer_dependencies.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_range) in peer_dependencies {
           let ident = parse_name_to_ident(dep_name);
           let descriptor = Descriptor::new(ident, dep_range);
@@ -384,62 +331,36 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
         }
         package.peer_dependencies = peer_deps_map;
       } else if rest.strip_prefix("bin:").is_some() {
-        // Skip past the "bin:" line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
-        // handle `bin` field
+        remaining = advance_to_next_line(remaining, line_end);
         let (new_remaining, binaries) = parse_bin_block_scanner(remaining);
         remaining = new_remaining;
-        let mut bin_map =
-          FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
+        let mut bin_map = FxHashMap::with_capacity_and_hasher(binaries.len(), rustc_hash::FxBuildHasher);
         for (bin_name, bin_path) in binaries {
           bin_map.insert(bin_name, bin_path);
         }
         package.bin = bin_map;
       } else if rest.strip_prefix("dependenciesMeta:").is_some() {
-        // Skip past the "dependenciesMeta:" line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
-        // handle `dependenciesMeta` field
+        remaining = advance_to_next_line(remaining, line_end);
         let (new_remaining, meta) = parse_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
-        let mut meta_map =
-          FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        let mut meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
           let ident = parse_name_to_ident(dep_name);
           meta_map.insert(ident, Some(dep_meta));
         }
         package.dependencies_meta = meta_map;
       } else if rest.strip_prefix("peerDependenciesMeta:").is_some() {
-        // Skip past the "peerDependenciesMeta:" line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
-        // handle `peerDependenciesMeta` field
+        remaining = advance_to_next_line(remaining, line_end);
         let (new_remaining, meta) = parse_peer_dependencies_meta_block_scanner(remaining);
         remaining = new_remaining;
-        let mut peer_meta_map =
-          FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
+        let mut peer_meta_map = FxHashMap::with_capacity_and_hasher(meta.len(), rustc_hash::FxBuildHasher);
         for (dep_name, dep_meta) in meta {
           let ident = parse_name_to_ident(dep_name);
           peer_meta_map.insert(ident, dep_meta);
         }
         package.peer_dependencies_meta = peer_meta_map;
       } else {
-        // Unknown property, skip to next line
-        remaining = if line_end < remaining.len() {
-          &remaining[line_end + 1..]
-        } else {
-          &remaining[line_end..]
-        };
+        remaining = advance_to_next_line(remaining, line_end);
       }
     }
   }
@@ -447,6 +368,16 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
   Ok((remaining, package))
 }
 
+
+/// Advance to the next line, handling both cases where newline exists and at EOF
+#[inline]
+fn advance_to_next_line(remaining: &str, line_end: usize) -> &str {
+  if line_end < remaining.len() {
+    &remaining[line_end + 1..]
+  } else {
+    &remaining[line_end..]
+  }
+}
 
 /// Parse a simple key-value property line
 pub fn parse_simple_property(input: &str) -> IResult<&str, (&str, &str)> {
@@ -1458,8 +1389,8 @@ __metadata:
         assert_eq!(descriptors.len(), 2);
       }
       Err(e) => {
-        println!("ERROR: {:?}", e);
-        panic!("Failed to parse adobe css tools descriptor: {:?}", e);
+        println!("ERROR: {e:?}");
+        panic!("Failed to parse adobe css tools descriptor: {e:?}");
       }
     }
   }
@@ -1485,8 +1416,8 @@ __metadata:
         assert_eq!(package.version, Some("4.4.0"));
       }
       Err(e) => {
-        println!("ERROR: {:?}", e);
-        panic!("Failed to parse adobe css tools entry: {:?}", e);
+        println!("ERROR: {e:?}");
+        panic!("Failed to parse adobe css tools entry: {e:?}");
       }
     }
   }
@@ -1523,8 +1454,8 @@ __metadata:
         assert_eq!(lockfile.entries.len(), 2);
       }
       Err(e) => {
-        println!("ERROR: {:?}", e);
-        panic!("Failed to parse lockfile: {:?}", e);
+        println!("ERROR: {e:?}");
+        panic!("Failed to parse lockfile: {e:?}");
       }
     }
   }
