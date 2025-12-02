@@ -221,7 +221,7 @@ for (const [key, value] of Object.entries(parsed)) {{
     const dependenciesMeta = {{}};
     if (value.dependenciesMeta) {{
         for (const [name, meta] of Object.entries(value.dependenciesMeta)) {{
-            // Handle string "true"/"false" or boolean values
+            // Handle string true/false or boolean values
             const toBoolOrNull = (v) => {{
                 if (v === undefined) return null;
                 if (typeof v === 'string') return v === 'true';
@@ -238,7 +238,7 @@ for (const [key, value] of Object.entries(parsed)) {{
     const peerDependenciesMeta = {{}};
     if (value.peerDependenciesMeta) {{
         for (const [name, meta] of Object.entries(value.peerDependenciesMeta)) {{
-            // Handle string "true"/"false" or boolean values
+            // Handle string true/false or boolean values
             let optional = meta.optional;
             if (typeof optional === 'string') {{
                 optional = optional === 'true';
