@@ -79,7 +79,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: yarn
+          cache: 'yarn'
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -121,7 +121,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
+          cache: 'yarn'
       - name: Install dependencies
         run: yarn install
       - name: Download artifacts
@@ -147,7 +147,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: yarn
+          cache: 'yarn'
       - name: Install dependencies
         run: yarn install
       - name: Download all artifacts
