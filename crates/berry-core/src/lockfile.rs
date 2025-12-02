@@ -27,7 +27,7 @@ pub struct Lockfile<'a> {
 /// A single lockfile entry is a mapping of one or more descriptors to a single package
 #[derive(Debug)]
 pub struct Entry<'a> {
-  /// The descriptors of the entry (using SmallVec for stack allocation in common case)
+  /// The descriptors of the entry (using `SmallVec` for stack allocation in common case)
   pub descriptors: SmallVec<[Descriptor<'a>; 4]>,
   /// The package of the entry
   pub package: Package<'a>,

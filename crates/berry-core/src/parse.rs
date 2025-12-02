@@ -95,7 +95,7 @@ pub fn parse_package_entry(
 }
 
 /// Parse a package descriptor line like: "debug@npm:1.0.0":, eslint-config-turbo@latest:, or ? "conditional@npm:1.0.0":
-/// Uses SmallVec<[Descriptor; 4]> since most descriptor lines have 1-3 descriptors
+/// Uses `SmallVec<[Descriptor; 4]>` since most descriptor lines have 1-3 descriptors
 pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<'_>; 4]>> {
   // Check for optional '? ' prefix for wrapped-line descriptors
   let (rest, has_line_wrap_marker) = opt(tag("? ")).parse(input)?;
@@ -164,109 +164,28 @@ pub fn parse_descriptor_line(input: &str) -> IResult<&str, SmallVec<[Descriptor<
 /// Convert parsed descriptor data (borrowed strings) to Descriptor
 /// All strings remain borrowed from the input - zero allocation!
 #[inline]
-fn convert_to_descriptor<'a>(
-  (name_part, protocol, range): (&'a str, &'a str, &'a str),
-) -> Descriptor<'a> {
+fn convert_to_descriptor<'a>((name_part, full_range): (&'a str, &'a str)) -> Descriptor<'a> {
   let ident = parse_name_to_ident(name_part);
-  // For the range, we need to find or construct the full range string
-  // Since we're borrowing, we need to handle this carefully
-  // The range is either just `range` (no protocol) or we need to find it in the original
-  // Actually, the original descriptor_string contains the full range, so we can slice it
-  // But for now, let's use the parsed parts
-  // If protocol is empty, range is the full range
-  // If protocol is not empty, we need to reconstruct or find original
-  //
-  // For zero-copy, we need to work with the original string
-  // The simplest approach: find the @ in name_part and take everything after
-  // But that's already done by parse_single_descriptor
-  //
-  // The issue: Descriptor::new takes range_raw: &'a str
-  // We have protocol and range separately, need to combine them
-  // But we can't allocate! So we need to find the original substring
-  //
-  // Actually, looking at how parse_single_descriptor works, the range returned
-  // is the full range including protocol:selector or just selector
-  // Let me check - no, it returns (name_part, protocol, range) separately
-  //
-  // For true zero-copy, we'd need to restructure to keep the original range string
-  // For now, let's construct it - this is ONE allocation per descriptor
-  // Still much better than before
-  let full_range = if protocol.is_empty() {
-    range
-  } else {
-    // We need to find the original range in the input
-    // This is tricky - for now fall back to looking at the original
-    // The name_part ends where @ is, then protocol:range follows
-    // But we don't have access to the original here
-    //
-    // Actually we can reconstruct from the input the parse_single_descriptor receives
-    // But we don't have it here either
-    //
-    // For now: use a workaround - the range includes protocol:selector in the original
-    // Let's look at parse_single_descriptor more carefully...
-    // It returns protocol and range separately after parsing
-    // But the original string has them together!
-    //
-    // We need to change parse_single_descriptor to return the full range
-    // For now, let's return just the range part and reconstruct
-    // This means we'll need ONE allocation still for protocol:range case
-    //
-    // TODO: Optimize this to avoid allocation by returning full range slice
-    range // For now, just use the selector part; we'll fix this
-  };
   Descriptor::new(ident, full_range)
 }
 
 /// Parse a single descriptor string like "debug@npm:1.0.0", "c@*", or "is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"
 /// Returns borrowed strings to avoid allocations during parsing
-/// Returns (name_part, full_range) where full_range includes protocol if present
-fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str, &str)> {
-  // Find the @ that separates name from range
-  // For scoped packages like @babel/core@npm:1.0.0, we need the LAST @ before range
-  // Strategy: find package name first, then take rest as range
+/// Returns (`name_part`, `full_range`) where `full_range` includes protocol if present (e.g., "npm:^1.0.0")
+fn parse_single_descriptor(input: &str) -> IResult<&str, (&str, &str)> {
+  // Parse package name first
+  let (after_name, name_part) = parse_package_name(input)?;
 
-  // Try patch protocol format first (e.g., patch:is-odd@npm%3A3.0.1#~/.yarn/patches/...)
-  if let Ok((remaining, (name_part, _, protocol, _, patch_range))) = (
-    parse_package_name,
-    char('@'),
-    parse_protocol,
-    char(':'),
-    parse_patch_range,
-  )
-    .parse(input)
-    && protocol == "patch"
-  {
-    return Ok((remaining, (name_part, protocol, patch_range)));
-  }
+  // Parse @ separator
+  let (after_at, _) = char('@').parse(after_name)?;
 
-  // Try protocol:range format (e.g., npm:1.0.0)
-  if let Ok((remaining, (name_part, _, protocol, _, range))) = (
-    parse_package_name,
-    char('@'),
-    parse_protocol,
-    char(':'),
-    take_while1(|c: char| c != ',' && c != '"'),
-  )
-    .parse(input)
-  {
-    return Ok((remaining, (name_part, protocol, range)));
-  }
+  // Everything after @ until comma or quote is the full range (including protocol if present)
+  let (remaining, full_range) = take_while1(|c: char| c != ',' && c != '"').parse(after_at)?;
 
-  // Try simple range format (e.g., * for c@*)
-  if let Ok((remaining, (name_part, _, range))) = (
-    parse_package_name,
-    char('@'),
-    take_while1(|c: char| c != ',' && c != '"'),
-  )
-    .parse(input)
-  {
-    return Ok((remaining, (name_part, "", range)));
-  }
+  // Trim trailing whitespace from range to match JS parser behavior (e.g., "npm:^1.0.4 " -> "npm:^1.0.4")
+  let full_range = full_range.trim_end();
 
-  Err(nom::Err::Error(nom::error::Error::new(
-    input,
-    nom::error::ErrorKind::Alt,
-  )))
+  Ok((remaining, (name_part, full_range)))
 }
 
 /// Helper function to parse name part into Ident (zero-copy)
@@ -306,19 +225,6 @@ fn parse_package_name(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_' || c == '.'),
   ))
   .parse(input)
-}
-
-/// Parse protocol part like npm, workspace, git, etc.
-fn parse_protocol(input: &str) -> IResult<&str, &str> {
-  // Support common protocol tokens including git+ssh
-  take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_' || c == '+').parse(input)
-}
-
-/// Parse patch range which can be complex like:
-/// - "is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd-npm-3.0.1-93c3c3f41b.patch"
-/// - "typescript@npm%3A^5.8.3#optional!builtin<compat/typescript>"
-fn parse_patch_range(input: &str) -> IResult<&str, &str> {
-  take_while1(|c: char| c != ',' && c != '"').parse(input)
 }
 
 /// Parse indented key-value properties for a package
@@ -416,7 +322,7 @@ pub fn parse_package_properties(input: &str) -> IResult<&str, Package<'_>> {
   .parse(input)?;
 
   // Consume any trailing whitespace and blank lines
-  let (rest, _) = fold_many0(
+  let (rest, ()) = fold_many0(
     alt((tag("\n"), tag(" "), tag("\t"), tag("\r"))),
     || (),
     |(), _| (),
@@ -978,5 +884,120 @@ __metadata:
     let (remaining, meta) = result.unwrap();
     assert_eq!(meta.len(), 2);
     assert!(remaining.is_empty());
+  }
+
+  #[test]
+  fn test_descriptor_range_includes_npm_protocol() {
+    let input = r#""debug@npm:^4.3.0":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "debug");
+    assert_eq!(descriptor.range(), "npm:^4.3.0");
+  }
+
+  #[test]
+  fn test_descriptor_range_includes_npm_protocol_scoped() {
+    let input = r#""@babel/core@npm:^7.0.0":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "core");
+    assert_eq!(descriptor.ident().scope(), Some("@babel"));
+    assert_eq!(descriptor.range(), "npm:^7.0.0");
+  }
+
+  #[test]
+  fn test_descriptor_range_no_protocol() {
+    let input = r#""c@*":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "c");
+    assert_eq!(descriptor.range(), "*");
+  }
+
+  #[test]
+  fn test_descriptor_range_workspace_protocol() {
+    let input = r#""my-package@workspace:packages/my-package":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "my-package");
+    assert_eq!(descriptor.range(), "workspace:packages/my-package");
+  }
+
+  #[test]
+  fn test_descriptor_range_multiple_with_npm_protocol() {
+    let input = r#""prompts@npm:^2.0.1, prompts@npm:^2.4.2":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 2);
+
+    assert_eq!(descriptors[0].ident().name(), "prompts");
+    assert_eq!(descriptors[0].range(), "npm:^2.0.1");
+
+    assert_eq!(descriptors[1].ident().name(), "prompts");
+    assert_eq!(descriptors[1].range(), "npm:^2.4.2");
+  }
+
+  #[test]
+  fn test_descriptor_range_mixed_protocols() {
+    let input = r#""c@*, c@workspace:packages/c":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 2);
+
+    assert_eq!(descriptors[0].ident().name(), "c");
+    assert_eq!(descriptors[0].range(), "*");
+
+    assert_eq!(descriptors[1].ident().name(), "c");
+    assert_eq!(descriptors[1].range(), "workspace:packages/c");
+  }
+
+  #[test]
+  fn test_descriptor_range_patch_protocol() {
+    let input = r#""is-odd@patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd.patch":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "is-odd");
+    assert_eq!(
+      descriptor.range(),
+      "patch:is-odd@npm%3A3.0.1#~/.yarn/patches/is-odd.patch"
+    );
+  }
+
+  #[test]
+  fn test_descriptor_range_trims_trailing_whitespace() {
+    // Some lockfiles have trailing spaces in descriptor ranges (e.g., "@oclif/screen@npm^1.0.4 ")
+    let input = r#""@oclif/screen@npm:^1.0.4 ":"#;
+    let result = parse_descriptor_line(input);
+    assert!(result.is_ok());
+    let (_, descriptors) = result.unwrap();
+    assert_eq!(descriptors.len(), 1);
+
+    let descriptor = &descriptors[0];
+    assert_eq!(descriptor.ident().name(), "screen");
+    assert_eq!(descriptor.ident().scope(), Some("@oclif"));
+    // Trailing whitespace should be trimmed to match JS parser behavior
+    assert_eq!(descriptor.range(), "npm:^1.0.4");
   }
 }
