@@ -120,7 +120,10 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .iter()
     .filter_map(|(ident, meta)| {
       meta.as_ref().map(|m| {
-        let name = ident.scope().map_or_else(|| ident.name().to_string(), |scope| format!("{}/{}", scope, ident.name()));
+        let name = ident.scope().map_or_else(
+          || ident.name().to_string(),
+          |scope| format!("{}/{}", scope, ident.name()),
+        );
         (
           name,
           DependencyMetaCompare {
@@ -138,7 +141,10 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
     .peer_dependencies_meta
     .iter()
     .map(|(ident, meta)| {
-      let name = ident.scope().map_or_else(|| ident.name().to_string(), |scope| format!("{}/{}", scope, ident.name()));
+      let name = ident.scope().map_or_else(
+        || ident.name().to_string(),
+        |scope| format!("{}/{}", scope, ident.name()),
+      );
       (
         name,
         PeerDependencyMetaCompare {
