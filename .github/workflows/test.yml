@@ -1,0 +1,25 @@
+name: Test
+
+env:
+  DEBUG: napi:*
+  APP_NAME: berry
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile
+        run: cargo check --locked
+      - name: Test
+        run: cargo --locked nextest run --no-tests pass

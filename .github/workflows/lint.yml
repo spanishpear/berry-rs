@@ -1,0 +1,36 @@
+name: Lint
+
+env:
+  DEBUG: napi:*
+  APP_NAME: berry
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'yarn'
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: yarn install
+      - name: Oxlint
+        run: yarn lint
+      - name: Cargo fmt
+        run: cargo --locked fmt -- --check
+      - name: Clippy
+        run: cargo --locked clippy -- -D warnings
