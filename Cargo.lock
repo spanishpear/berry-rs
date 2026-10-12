@@ -134,6 +134,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-ref"
+version = "0.6.0"
+dependencies = [
+ "nom",
+ "smallvec",
+]
+
+[[package]]
 name = "berry-test"
 version = "0.6.0"
 dependencies = [

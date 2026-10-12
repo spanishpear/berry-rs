@@ -13,6 +13,7 @@ resolver = "2"
 
   [workspace.dependencies]
   berry      = { path = "crates/berry-core" }
+  berry-ref  = { path = "crates/berry-ref" }
   berry-test = { path = "crates/berry-test" }
   # https://nodejs.org/api/n-api.html#node-api-version-matrix
   # support node 18-22
