@@ -1,0 +1,55 @@
+# berry canonical dump v1
+metadata.version: "8"
+metadata.cache_key: "10"
+resolutions: <none>
+constraints: <none>
+remaining: len=0 non_whitespace=false head=""
+entries: 3
+entry 0
+  descriptors: 1
+    descriptor[0] scope=<none> name="alpha" range="npm:^1.0.0" protocol_str="npm" protocol=Npm selector="^1.0.0"
+  version: "1.0.0"
+  resolution: "alpha@npm:1.0.0"
+  resolution_locator: scope=<none> name="alpha" reference="npm:1.0.0"
+  language_name: "node"
+  link_type: Hard
+  checksum: "10/abc"
+  conditions: <none>
+  dependencies: 2
+    scope=<none> name="beta" => scope=<none> name="beta" range="npm:^2.0.0" protocol_str="npm" protocol=Npm selector="^2.0.0"
+    scope="@sc" name="gamma" => scope="@sc" name="gamma" range="npm:3.0.0" protocol_str="npm" protocol=Npm selector="3.0.0"
+  dependencies_meta: 0
+  peer_dependencies: 0
+  peer_dependencies_meta: 0
+  bin: 0
+entry 1
+  descriptors: 1
+    descriptor[0] scope=<none> name="beta" range="npm:^2.0.0" protocol_str="npm" protocol=Npm selector="^2.0.0"
+  version: "2.0.0"
+  resolution: "beta@npm:2.0.0"
+  resolution_locator: scope=<none> name="beta" reference="npm:2.0.0"
+  language_name: "node"
+  link_type: Hard
+  checksum: <none>
+  conditions: <none>
+  dependencies: 0
+  dependencies_meta: 0
+  peer_dependencies: 0
+  peer_dependencies_meta: 0
+  bin: 0
+entry 2
+  descriptors: 1
+    descriptor[0] scope="@sc" name="gamma" range="npm:3.0.0" protocol_str="npm" protocol=Npm selector="3.0.0"
+  version: "3.0.0"
+  resolution: "@sc/gamma@npm:3.0.0"
+  resolution_locator: scope="@sc" name="gamma" reference="npm:3.0.0"
+  language_name: "node"
+  link_type: Hard
+  checksum: <none>
+  conditions: <none>
+  dependencies: 0
+  dependencies_meta: 0
+  peer_dependencies: 1
+    scope=<none> name="beta" => scope=<none> name="beta" range="^2" protocol_str=<none> protocol=Unknown selector="^2"
+  peer_dependencies_meta: 0
+  bin: 0

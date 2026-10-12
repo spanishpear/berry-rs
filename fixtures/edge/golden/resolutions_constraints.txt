@@ -1,0 +1,11 @@
+# berry canonical dump v1
+metadata.version: "8"
+metadata.cache_key: "10"
+resolutions: 3
+  resolutions[0] key="lodash@^4" value="npm:4.17.21"
+  resolutions[1] key="@s/p@^1" value="npm:^1.2.3"
+  resolutions[2] key="a\"" value="b"
+constraints: 1
+  constraints[0] key="react@^18" value="npm:^18.2.0"
+remaining: len=105 non_whitespace=true head="\"beta@npm:^2.0.0\":\n  version: 2.0.0\n  resolution: \"beta@npm:2.0.0\"\n  languageName: node\n  linkType: hard\n"
+entries: 0

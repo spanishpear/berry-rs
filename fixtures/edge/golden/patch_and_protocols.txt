@@ -1,0 +1,45 @@
+# berry canonical dump v1
+metadata.version: "8"
+metadata.cache_key: "10"
+resolutions: <none>
+constraints: <none>
+remaining: len=0 non_whitespace=false head=""
+entries: 2
+entry 0
+  descriptors: 1
+    descriptor[0] scope=<none> name="p" range="patch:p@npm%3A1.0.0#~/.yarn/patches/p.patch::version=1.0.0&hash=abc&locator=app%40workspace%3A." protocol_str="patch" protocol=Patch selector="p@npm%3A1.0.0#~/.yarn/patches/p.patch::version=1.0.0&hash=abc&locator=app%40workspace%3A."
+  version: "1.0.0"
+  resolution: "p@patch:p@npm%3A1.0.0#~/.yarn/patches/p.patch::version=1.0.0&hash=abc&locator=app%40workspace%3A."
+  resolution_locator: scope=<none> name="p" reference="patch:p@npm%3A1.0.0#~/.yarn/patches/p.patch::version=1.0.0&hash=abc&locator=app%40workspace%3A."
+  language_name: "node"
+  link_type: Hard
+  checksum: <none>
+  conditions: <none>
+  dependencies: 8
+    scope=<none> name="e" => scope=<none> name="e" range="exec:node ./x.js" protocol_str="exec" protocol=Exec selector="node ./x.js"
+    scope=<none> name="f" => scope=<none> name="f" range="file:../f.tgz" protocol_str="file" protocol=File selector="../f.tgz"
+    scope=<none> name="g" => scope=<none> name="g" range="git+ssh://git@github.com/o/r.git#commit=abc" protocol_str="git+ssh" protocol=Git selector="//git@github.com/o/r.git#commit=abc"
+    scope=<none> name="h" => scope=<none> name="h" range="https://example.com/x.tgz" protocol_str="https" protocol=Unknown selector="//example.com/x.tgz"
+    scope=<none> name="l" => scope=<none> name="l" range="link:./l" protocol_str="link" protocol=Link selector="./l"
+    scope=<none> name="po" => scope=<none> name="po" range="portal:./po" protocol_str="portal" protocol=Portal selector="./po"
+    scope=<none> name="s" => scope=<none> name="s" range="*" protocol_str=<none> protocol=Unknown selector="*"
+    scope=<none> name="w" => scope=<none> name="w" range="workspace:^" protocol_str="workspace" protocol=Workspace selector="^"
+  dependencies_meta: 0
+  peer_dependencies: 0
+  peer_dependencies_meta: 0
+  bin: 0
+entry 1
+  descriptors: 1
+    descriptor[0] scope=<none> name="beta" range="npm:^2.0.0" protocol_str="npm" protocol=Npm selector="^2.0.0"
+  version: "2.0.0"
+  resolution: "beta@npm:2.0.0"
+  resolution_locator: scope=<none> name="beta" reference="npm:2.0.0"
+  language_name: "node"
+  link_type: Hard
+  checksum: <none>
+  conditions: <none>
+  dependencies: 0
+  dependencies_meta: 0
+  peer_dependencies: 0
+  peer_dependencies_meta: 0
+  bin: 0

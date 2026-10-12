@@ -1,0 +1,7 @@
+# berry canonical dump v1
+metadata.version: "8"
+metadata.cache_key: "10"
+resolutions: <none>
+constraints: <none>
+remaining: len=0 non_whitespace=false head=""
+entries: 0

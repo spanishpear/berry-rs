@@ -21,3 +21,4 @@ name    = "parser_benchmarks"
 
 [dev-dependencies]
 criterion = { workspace = true }
+rayon     = { workspace = true }

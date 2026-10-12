@@ -92,6 +92,7 @@ dependencies = [
  "clap",
  "criterion",
  "memory-stats",
+ "rayon",
 ]
 
 [[package]]

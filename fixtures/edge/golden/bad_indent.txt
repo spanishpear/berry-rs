@@ -1,0 +1,22 @@
+# berry canonical dump v1
+metadata.version: "8"
+metadata.cache_key: "10"
+resolutions: <none>
+constraints: <none>
+remaining: len=159 non_whitespace=true head="version: 1.0.0\n  languageName: node\n  linkType: hard\n\n\"beta@npm:^2.0.0\":\n  version: 2.0.0\n  resolution: \"beta@npm:2.0.0\"\n  languageName: node\n  linkType: hard\n"
+entries: 1
+entry 0
+  descriptors: 1
+    descriptor[0] scope=<none> name="i" range="npm:1" protocol_str="npm" protocol=Npm selector="1"
+  version: <none>
+  resolution: <none>
+  resolution_locator: <none>
+  language_name: "unknown"
+  link_type: Hard
+  checksum: <none>
+  conditions: <none>
+  dependencies: 0
+  dependencies_meta: 0
+  peer_dependencies: 0
+  peer_dependencies_meta: 0
+  bin: 0
