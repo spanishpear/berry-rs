@@ -9,5 +9,6 @@ version.workspace    = true
 publish = false
 
 [dependencies]
-berry = { workspace = true }
-clap  = { workspace = true }
+berry      = { workspace = true }
+berry-test = { workspace = true }
+clap       = { workspace = true }

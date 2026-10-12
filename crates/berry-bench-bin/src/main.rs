@@ -1,4 +1,3 @@
-use berry::parse::parse_lockfile;
 use berry_test::{load_fixture, load_fixture_from_path};
 use clap::Parser;
 use memory_stats::memory_stats;
@@ -191,7 +190,7 @@ fn benchmark_fixture(
   // Warmup runs
   for i in 0..warmup {
     let start = Instant::now();
-    let result = parse_lockfile(black_box(fixture_str));
+    let result = berry::parse(black_box(fixture_str));
     let duration = start.elapsed();
     assert!(result.is_ok(), "Should parse {} successfully", target.label);
 
@@ -200,14 +199,14 @@ fn benchmark_fixture(
         "  Warmup {}: {:.3}ms - {} packages parsed",
         i + 1,
         duration.as_secs_f64() * 1000.0,
-        result.unwrap().1.entries.len()
+        result.unwrap().len()
       );
     }
   }
 
   // Measure heap usage with a single run
   let before = memory_stats().unwrap();
-  let result = parse_lockfile(black_box(fixture_str));
+  let result = berry::parse(black_box(fixture_str));
   let after = memory_stats().unwrap();
 
   let heap_usage = isize::try_from(after.physical_mem).expect("physical mem too large")
@@ -226,7 +225,7 @@ fn benchmark_fixture(
 
   for i in 0..runs {
     let start = Instant::now();
-    let result = parse_lockfile(black_box(fixture_str));
+    let result = berry::parse(black_box(fixture_str));
     let duration = start.elapsed();
     let time_ms = duration.as_secs_f64() * 1000.0;
     times.push(time_ms);

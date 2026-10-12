@@ -6,11 +6,16 @@ edition.workspace     = true
 license.workspace     = true
 name                  = "berry"
 repository.workspace  = true
-version               = "0.6.0"
+version               = "0.7.0"
 
 [dependencies]
-nom      = { workspace = true }
-smallvec = { workspace = true }
+memchr   = { workspace = true }
+memmap2  = { workspace = true }
+rayon    = { workspace = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+# mincore(2): is a mapped lockfile already in the page cache (parse_file)?
+libc = { workspace = true }
 
 [lints]
 workspace = true

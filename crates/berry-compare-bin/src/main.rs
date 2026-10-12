@@ -3,10 +3,9 @@
 //! Parses a lockfile with both parsers, compares the results,
 //! and measures the performance of each.
 
-use berry::lockfile::Entry;
-use berry::parse::parse_lockfile;
+use berry::{EntryView, LinkType, Lockfile};
 use berry_test::load_fixture_from_path;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -26,6 +25,18 @@ struct Args {
   /// Number of iterations for timing
   #[arg(short, long, default_value = "5")]
   iterations: usize,
+
+  /// berry entry point to time and compare
+  #[arg(long, value_enum, default_value_t = Api::Str)]
+  api: Api,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Api {
+  /// `berry::parse` on the file's text (read once, outside the timing)
+  Str,
+  /// `berry::parse_file` on the path (open, map or read, validate, parse)
+  File,
 }
 
 /// A simplified representation of a parsed package for comparison
@@ -65,88 +76,51 @@ struct JsParserOutput {
   entries: Vec<CompareEntry>,
 }
 
-/// Convert a berry Entry to `CompareEntry`
-fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
-  let mut descriptors: Vec<String> = entry
-    .descriptors
-    .iter()
-    .map(|d| {
-      let ident = d.ident();
-      let name = ident.scope().map_or_else(
-        || ident.name().to_string(),
-        |scope| format!("{}/{}", scope, ident.name()),
-      );
-      format!("{}@{}", name, d.range())
-    })
-    .collect();
+/// Convert a berry entry view to `CompareEntry` (repeated keys: last wins,
+/// like a JS object).
+fn entry_to_compare(entry: EntryView<'_>) -> CompareEntry {
+  let mut descriptors: Vec<String> = entry.descriptors().iter().map(|d| d.to_string()).collect();
   descriptors.sort();
 
   let dependencies: HashMap<String, String> = entry
-    .package
-    .dependencies
+    .dependencies()
     .iter()
-    .map(|(ident, desc)| {
-      let name = ident.scope().map_or_else(
-        || ident.name().to_string(),
-        |scope| format!("{}/{}", scope, ident.name()),
-      );
-      (name, desc.range().to_string())
-    })
+    .map(|d| (d.ident().to_string(), d.range().to_string()))
     .collect();
 
   let peer_dependencies: HashMap<String, String> = entry
-    .package
-    .peer_dependencies
+    .peer_dependencies()
     .iter()
-    .map(|(ident, desc)| {
-      let name = ident.scope().map_or_else(
-        || ident.name().to_string(),
-        |scope| format!("{}/{}", scope, ident.name()),
-      );
-      (name, desc.range().to_string())
-    })
+    .map(|d| (d.ident().to_string(), d.range().to_string()))
     .collect();
 
   let bin: HashMap<String, String> = entry
-    .package
-    .bin
+    .bin()
     .iter()
-    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+    .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
 
   let dependencies_meta: HashMap<String, DependencyMetaCompare> = entry
-    .package
-    .dependencies_meta
+    .dependencies_meta()
     .iter()
-    .filter_map(|(ident, meta)| {
-      meta.as_ref().map(|m| {
-        let name = ident.scope().map_or_else(
-          || ident.name().to_string(),
-          |scope| format!("{}/{}", scope, ident.name()),
-        );
-        (
-          name,
-          DependencyMetaCompare {
-            built: m.built,
-            optional: m.optional,
-            unplugged: m.unplugged,
-          },
-        )
-      })
+    .map(|(ident, m)| {
+      (
+        ident.to_string(),
+        DependencyMetaCompare {
+          built: m.built,
+          optional: m.optional,
+          unplugged: m.unplugged,
+        },
+      )
     })
     .collect();
 
   let peer_dependencies_meta: HashMap<String, PeerDependencyMetaCompare> = entry
-    .package
-    .peer_dependencies_meta
+    .peer_dependencies_meta()
     .iter()
     .map(|(ident, meta)| {
-      let name = ident.scope().map_or_else(
-        || ident.name().to_string(),
-        |scope| format!("{}/{}", scope, ident.name()),
-      );
       (
-        name,
+        ident.to_string(),
         PeerDependencyMetaCompare {
           optional: meta.optional,
         },
@@ -156,15 +130,15 @@ fn entry_to_compare(entry: &Entry<'_>) -> CompareEntry {
 
   CompareEntry {
     descriptors,
-    version: entry.package.version.map(String::from),
-    resolution: entry.package.resolution.map(String::from),
-    language_name: entry.package.language_name.to_string(),
-    link_type: match entry.package.link_type {
-      berry::package::LinkType::Hard => "hard".to_string(),
-      berry::package::LinkType::Soft => "soft".to_string(),
+    version: entry.version().map(String::from),
+    resolution: entry.resolution().map(String::from),
+    language_name: entry.language_name().to_string(),
+    link_type: match entry.link_type() {
+      LinkType::Hard => "hard".to_string(),
+      LinkType::Soft => "soft".to_string(),
     },
-    checksum: entry.package.checksum.map(String::from),
-    conditions: entry.package.conditions.map(String::from),
+    checksum: entry.checksum().map(String::from),
+    conditions: entry.conditions().map(String::from),
     dependencies,
     dependencies_meta,
     peer_dependencies,
@@ -316,19 +290,27 @@ fn run_js_parser(fixture_path: &Path) -> Result<JsParserOutput, String> {
   serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse JSON: {e}\nOutput: {stdout}"))
 }
 
-fn time_rust_parser(contents: &str, iterations: usize) -> (Vec<Entry<'_>>, f64) {
+fn time_rust_parser<'a>(
+  contents: &'a str,
+  path: &Path,
+  api: Api,
+  iterations: usize,
+) -> (Lockfile<'a>, f64) {
   let mut total_time = 0.0;
-  let mut entries = Vec::new();
+  let mut lockfile = None;
 
-  for _ in 0..iterations {
+  for _ in 0..iterations.max(1) {
     let start = Instant::now();
-    let result = parse_lockfile(contents).expect("Failed to parse lockfile");
+    let result = match api {
+      Api::Str => berry::parse(contents).expect("Failed to parse lockfile"),
+      Api::File => berry::parse_file(path).unwrap_or_else(|e| panic!("Failed to parse {e}")),
+    };
     total_time = start.elapsed().as_secs_f64().mul_add(1000.0, total_time);
-    entries = result.1.entries;
+    lockfile = Some(result);
   }
 
-  let avg_time = total_time / iterations as f64;
-  (entries, avg_time)
+  let avg_time = total_time / iterations.max(1) as f64;
+  (lockfile.expect("at least one iteration"), avg_time)
 }
 
 fn time_js_parser(fixture_path: &Path, iterations: usize) -> (JsParserOutput, f64) {
@@ -631,12 +613,14 @@ fn main() {
   println!("Comparing parsers for: {}", fixture_path.display());
   println!("File size: {file_size} bytes");
   println!("Iterations: {}", args.iterations);
+  println!("berry API: {:?}", args.api);
   println!();
 
   // Time Rust parser
   print!("Running Rust parser... ");
   std::io::stdout().flush().unwrap();
-  let (rust_entries, rust_time) = time_rust_parser(&contents, args.iterations);
+  let (rust_entries, rust_time) =
+    time_rust_parser(&contents, &fixture_path, args.api, args.iterations);
   println!("done");
 
   // Time JS parser
