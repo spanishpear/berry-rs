@@ -323,7 +323,7 @@ fn time_rust_parser(contents: &str, iterations: usize) -> (Vec<Entry<'_>>, f64) 
   for _ in 0..iterations {
     let start = Instant::now();
     let result = parse_lockfile(contents).expect("Failed to parse lockfile");
-    total_time += start.elapsed().as_secs_f64() * 1000.0;
+    total_time = start.elapsed().as_secs_f64().mul_add(1000.0, total_time);
     entries = result.1.entries;
   }
 
@@ -338,7 +338,7 @@ fn time_js_parser(fixture_path: &Path, iterations: usize) -> (JsParserOutput, f6
   for _ in 0..iterations {
     let start = Instant::now();
     let result = run_js_parser(fixture_path).expect("Failed to run JS parser");
-    total_time += start.elapsed().as_secs_f64() * 1000.0;
+    total_time = start.elapsed().as_secs_f64().mul_add(1000.0, total_time);
     output = Some(result);
   }
 
