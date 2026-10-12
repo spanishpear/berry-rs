@@ -4,7 +4,7 @@ Welcome to the Berry project! This document provides comprehensive guidelines fo
 
 ## Project Overview
 
-Berry is a high-performance, zero-allocation parser for Yarn v3/v4 lockfiles, built with Rust and nom. The project focuses on:
+Berry is a high-performance, zero-allocation parser for Yarn v3/v4 lockfiles, built with Rust. The project focuses on:
 
 - **Performance**: Sub-millisecond parsing for most lockfiles
 - **Memory Efficiency**: Zero-allocation parsing with minimal heap usage
@@ -315,7 +315,6 @@ cargo run --bin berry-bench-bin -- -f large-fixture.lock -v
 
 - [Task List](.cursor/tasks/BERRY_LOCKFILE_PARSER.md) - Detailed development progress
 - [Benchmarking Plan](.cursor/tasks/BENCHMARKING_PLAN.md) - Comprehensive benchmarking strategy
-- [Nom Documentation](https://docs.rs/nom/) - Parser combinator library
 - [Criterion Documentation](https://docs.rs/criterion/) - Benchmarking framework
 
 ## Getting Help

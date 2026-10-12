@@ -1,292 +1,102 @@
 # Core Parser Module
 
-Documentation for the core parser module (`crates/berry-core/`), a zero-allocation parser for Yarn v3/v4 lockfiles using Rust and nom.
+The core parser (`crates/berry-core/`) reads the lockfiles Yarn v3/v4 write.
+It produces `u32` span tables over the input, so a parse allocates a constant
+handful of buffers and accessors are borrowed views.
 
 ## Module Structure
 
 ```
 crates/berry-core/src/
-├── lib.rs           # Module exports
-├── parse.rs         # Main parsing logic
-├── package.rs       # Package struct and properties
-├── ident.rs         # Ident and Descriptor structs
-├── lockfile.rs      # Lockfile struct and metadata
-└── metadata.rs      # Metadata struct
+├── lib.rs           # crate-root API: parse(_with), parse_bytes(_with), parse_file(_with), re-exports
+├── file.rs          # (private) parse_file: mmap (>= 256 KiB) or read(2), FileError
+├── lockfile.rs      # (private) owning Lockfile<'a>, Buffers, Entries iterator, Metadata
+├── view.rs          # (private) EntryView, list views (Descriptors, Dependencies, Bins, ...), LinkType, DependencyMeta
+├── pipeline.rs      # (private) chunk plan, parallel chunk scans (rayon), stitch
+├── scan.rs          # (private) the grammar: header, __metadata and entries, scanned into span tables
+├── table.rs         # (private) span-table storage: one buffer per kind per parse, one window per chunk
+├── utf8.rs          # (private) parallel UTF-8 validation for parse_bytes / parse_file
+├── error.rs         # (private) 8-byte Error { offset, kind }, lazy line/column + description
+└── ident.rs         # Ident, Range, Protocol, Descriptor, Locator (views over the source text)
 ```
 
-## Core Components
+## Parsing pipeline
 
-### parse.rs - Main Parser
+1. `scan::preamble` checks the two header comment lines and reads the two
+   `__metadata` values.
+2. `scan::entry` reads one entry in the shape Yarn writes: a key line (`a@1:`,
+   `"a@1, b@2":` or, for keys over 1024 bytes, `? "..."` and a `:` line), then
+   two-space `key: value` lines and four-space blocks (`dependencies`,
+   `peerDependencies`, `bin`, and the nested `dependenciesMeta` /
+   `peerDependenciesMeta` forms). Keys are recognised by their first byte plus
+   one comparison; short searches use plain `u64` arithmetic (no intrinsics),
+   then `memchr`.
+3. An unknown property key is `ErrorKind::UnknownProperty` and a `linkType`
+   other than `hard`/`soft` is `ErrorKind::InvalidLinkType`. Any other text that
+   is not an entry ends the parse there: `Lockfile::remaining` is the rest.
+   Input Yarn does not write (CRLF, tabs, inline meta, top-level
+   `resolutions:` blocks, ...) never panics, hangs or causes UB, but its result
+   is unspecified.
+4. Bodies of 2.5 MB or more are cut into two chunks per rayon thread, at entry
+   starts (blank line + non-whitespace byte), and scanned in parallel. UTF-8
+   validation (`parse_bytes`, `parse_file`) uses the same split. A sequential
+   stitch walks the chunks with the position the sequential loop would be at:
+   chunks starting there are used as they are, chunks behind it are cleared,
+   others are scanned again from it. The result is identical to a sequential
+   parse for every split, including the stop and error point.
+5. The per-chunk span tables ("segments") are the final storage of the
+   returned `berry::Lockfile`; every accessor (`EntryView::dependencies()`,
+   `Descriptor::ident()`, ...) slices the source text on access. The seven
+   table kinds each have one buffer for the whole parse (`table.rs`), sized
+   from the chunk sizes and carved into one window per chunk, so a parse makes
+   8 allocations whatever the number of chunks, threads or entries, and none
+   with `parse_with` and recycled `Buffers`. A table that outgrows its window
+   moves to its own vector.
 
-**Entry point**: `parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile>`
+Lists keep source order and duplicates; `Dependencies::get`, `Bins::get` and
+`Dependencies::last_wins` give the 0.6 (`HashMap`, last wins) semantics.
 
-**Key functions**:
+The differential tests in `crates/berry-test` compare the canonical dump with a
+frozen copy of the 0.6 parser (`crates/berry-ref`) on every Yarn-shaped input,
+and check that everything else parses without a panic.
 
-- `parse_lockfile()` - Parse complete lockfile
-- `parse_package_entry()` - Parse individual package
-- `parse_descriptor_line()` - Parse package descriptor
-- `parse_package_properties()` - Parse package properties
-- `parse_dependencies_block()` - Parse dependencies
+## Known limitations
 
-**Zero-allocation implementation**:
+Edge cases outside normal lockfile use; none needs action in CI or local dev.
 
-```rust
-// Uses fold_many0 instead of many0 to avoid intermediate collections
-fold_many0(
-    parse_dependency_line,
-    Vec::new,
-    |mut acc, (name, range)| {
-        acc.push((name, range));
-        acc
-    }
-).parse(rest)
-```
-
-### package.rs - Package Management
-
-**Core struct**: `Package`
-
-**Fields**:
-
-- `ident: Ident` - Package identifier
-- `version: String` - Package version
-- `resolution: String` - Resolution string
-- `dependencies: Vec<(String, String)>` - Dependencies
-- `peer_dependencies: Vec<(String, String)>` - Peer dependencies
-- `checksum: Option<String>` - Package checksum
-- `language_name: Option<String>` - Language name
-- `link_type: Option<LinkType>` - Link type (hard/soft)
-
-**Property parsing**:
-
-```rust
-enum PropertyValue<'a> {
-    Simple(&'a str, &'a str),           // key: value
-    Dependencies(Vec<(&'a str, &'a str)>), // dependencies block
-    PeerDependencies(Vec<(&'a str, &'a str)>), // peerDependencies block
-    Bin(Vec<(&'a str, &'a str)>),       // bin block
-}
-```
-
-### ident.rs - Identifiers
-
-**Core structs**:
-
-```rust
-pub struct Ident {
-    pub scope: Option<String>,
-    pub name: String,
-}
-
-pub struct Descriptor {
-    pub ident: Ident,
-    pub range: String,
-}
-```
-
-**Descriptor parsing**:
-
-- Supports `"package@protocol:range"` format
-- Handles scoped packages: `"@scope/package@npm:1.0.0"`
-- Supports protocols: `npm:`, `workspace:`, etc.
-
-### lockfile.rs - Lockfile Structure
-
-**Core struct**:
-
-```rust
-pub struct Lockfile {
-    pub metadata: Metadata,
-    pub entries: Vec<Package>,
-}
-```
-
-**Metadata parsing**:
-
-- Extracts `version` from `__metadata` section
-- Handles `cacheKey` field
-- Validates lockfile format
-
-## Zero-Allocation Implementation
-
-### Borrowed Strings
-
-```rust
-// During parsing: use &str references
-fn parse_dependency_line(input: &str) -> IResult<&str, (&str, &str)> {
-    // Returns borrowed references to original input
-}
-
-// Final storage: allocate Strings
-let dependencies: Vec<(String, String)> = deps.into_iter()
-    .map(|(name, range)| (name.to_string(), range.to_string()))
-    .collect();
-```
-
-### No Intermediate Collections
-
-```rust
-// Avoid this (creates intermediate Vec):
-many0(parse_item).parse(input)
-
-// Use this (no intermediate allocation):
-fold_many0(
-    parse_item,
-    Vec::new,
-    |mut acc, item| {
-        acc.push(item);
-        acc
-    }
-).parse(input)
-```
-
-### Single-Pass Parsing
-
-```rust
-pub fn parse_lockfile(file_contents: &str) -> IResult<&str, Lockfile> {
-    let (rest, (_, _)) = parse_yarn_header(file_contents)?;
-    let (rest, metadata) = parse_metadata(rest)?;
-    let (rest, _) = opt(newline).parse(rest)?;
-    let (rest, packages) = many0(parse_package_only).parse(rest)?;
-
-    Ok((rest, Lockfile { metadata, entries: packages }))
-}
-```
-
-## Performance Characteristics
-
-### Parsing Speed (measured)
-
-- Small files (~1KB): 6-7 microseconds
-- Medium files (~2KB): 2-3 microseconds
-- Large files (~40KB): 5 microseconds
-
-### Memory Usage (measured)
-
-- Heap usage: 0-20KB depending on fixture
-- Zero-allocation validation: Some fixtures show 0 bytes heap usage
-- Physical memory tracking via `memory-stats` crate
-
-## Supported Features
-
-### Lockfile Format
-
-- Yarn v3/v4 lockfile format
-- Metadata section (`__metadata`)
-- Package entries with descriptors
-- Dependencies and peer dependencies
-- Package properties (version, resolution, checksum, etc.)
-
-### Parsing Capabilities
-
-- Scoped packages (`@scope/package`)
-- Protocol support (`npm:`, `workspace:`)
-- Complex range formats (`^3.0.0 || ^4.0.0`)
-- Multi-descriptor lines (comma-separated)
-- Unknown property handling (skip without failing)
-
-## Error Handling
-
-### Robustness
-
-```rust
-// Skip unknown properties
-fn parse_property_line(input: &str) -> IResult<&str, PropertyValue<'_>> {
-    // Try known properties first
-    if let Ok(result) = parse_simple_property(input) {
-        return Ok(result);
-    }
-    if let Ok(result) = parse_dependencies_block(input) {
-        return Ok(result);
-    }
-    // Skip unknown properties
-    let (rest, _) = take_until("\n").parse(input)?;
-    Ok((rest, PropertyValue::Simple("", "")))
-}
-```
-
-### Validation
-
-- Verify parsed data integrity
-- Check required fields
-- Validate format consistency
+- Parsing panics if the global rayon pool cannot spawn its threads (rayon's own behaviour).
+- `parse_file` on a non-regular file (pipe, device) reads it to the end before the size check.
+- Inputs over ~100 MB that are not a lockfile can make large up-front table reservations (sized from the input length).
+- `parse` called from inside a rayon task waits with `join`, so that worker may run other queued tasks meanwhile (normal rayon behaviour).
+- node-bindings `parse(Buffer)`: do not pass a `SharedArrayBuffer`-backed buffer that a Worker mutates during the call.
+- The error detail string (offending key, found value) is not length-capped.
+- `parse_file` maps large files: see its docs for the caller contract while Yarn rewrites `yarn.lock`.
 
 ## Usage Examples
 
 ### Basic Parsing
 
 ```rust
-use berry::parse::parse_lockfile;
-
-let content = r#"
-__metadata:
-  version: 6
-
-"debug@npm:1.0.0":
-  version: 1.0.0
-  resolution: "debug@npm:1.0.0"
-  dependencies:
-    ms: 0.6.2
-"#;
-
-match parse_lockfile(content) {
-    Ok((_, lockfile)) => {
-        println!("Packages: {}", lockfile.entries.len());
-        println!("Version: {}", lockfile.metadata.version);
+let content = std::fs::read_to_string("yarn.lock")?;
+match berry::parse(&content) {
+    Ok(lockfile) => {
+        println!("Packages: {}", lockfile.len());
+        println!("Version: {}", lockfile.metadata().version);
     }
-    Err(e) => eprintln!("Parse error: {:?}", e),
+    Err(e) => eprintln!("Parse error: {}", e.describe(&content)),
 }
 ```
 
 ### Access Package Data
 
 ```rust
-for package in &lockfile.entries {
-    println!("{}@{}", package.ident, package.version);
-
-    for (dep_name, dep_range) in &package.dependencies {
-        println!("  {}@{}", dep_name, dep_range);
+for entry in &lockfile {
+    for d in entry.descriptors() {
+        println!("{d} -> {:?}", entry.version());
+    }
+    // source order, duplicates kept; `last_wins()` gives the 0.6 map contents
+    for dep in entry.dependencies().last_wins() {
+        println!("  {}@{}", dep.ident(), dep.range());
     }
 }
 ```
-
-## Current Status
-
-**Completed**:
-
-- All tests passing (23/23)
-- Zero clippy warnings
-- Zero-allocation parsing pipeline
-- Modern nom API usage
-- Comprehensive test coverage
-- Multi-descriptor support with zero-allocation parsing
-- Patch protocol support
-- Bin and conditions field parsing
-
-**Known Issues**:
-
-- All Berry/Yarn v3/v4 fixtures parse successfully
-- Some Yarn v4 advanced features not implemented (dependenciesMeta, peerDependenciesMeta)
-
-## Future Work
-
-### Planned Features
-
-- Meta fields parsing (`dependenciesMeta`, `peerDependenciesMeta`)
-- Protocol-specific parsing (`git:`, `file:`, `portal:`)
-- Resolutions and constraints sections
-
-### Performance Improvements
-
-- String interning for common values
-- Custom allocator for final data structures
-- Streaming parsing for large files
-- Parallel parsing for large dependency trees
-
-## Related Files
-
-- `crates/berry-core/src/parse.rs` - Main parsing logic
-- `crates/berry-core/src/package.rs` - Package struct
-- `crates/berry-core/src/ident.rs` - Identifiers
-- `crates/berry-core/src/lockfile.rs` - Lockfile struct
-- `crates/berry-core/src/metadata.rs` - Metadata handling
