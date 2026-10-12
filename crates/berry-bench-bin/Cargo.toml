@@ -13,8 +13,20 @@ berry        = { workspace = true }
 berry-test   = { workspace = true }
 clap         = { workspace = true }
 memory-stats = { workspace = true }
+mimalloc     = { workspace = true, optional = true }
+rayon        = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+
+[features]
+# Install a counting global allocator in `berry-parse-bench` (allocation
+# count / bytes / peak live heap per parse). Off by default so timings are
+# not perturbed.
+alloc-count = []
+# Measurement only: use mimalloc (v3, as afm-tools does) as the global
+# allocator of the bench binaries, to time the parse and drop under the
+# consumer's allocator. Not a feature of the library.
+mimalloc = ["dep:mimalloc"]
 
 [lints]
 workspace = true
