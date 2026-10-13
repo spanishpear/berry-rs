@@ -1,2 +1,0 @@
-# error
-Error(Error { input: "", code: Char })

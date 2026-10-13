@@ -7,12 +7,6 @@
 pub mod canonical;
 pub mod differential;
 
-/// The canonical dump of the frozen reference parser (`berry_ref`), produced by
-/// the same code as [`canonical`] so the two outputs are directly comparable.
-pub mod canonical_ref {
-  crate::canonical_dump_impl!(berry_ref);
-}
-
 use std::path::Path;
 
 /// Load a fixture file from the fixtures directory

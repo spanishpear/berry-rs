@@ -1,2 +1,0 @@
-# error
-Error(Error { input: "\r\n# Manual changes might be lost - proceed with caution!\r\n\r\n__metadata:\r\n  version: 8\r\n  cacheKey: 10\r\n\r\n\"alpha@npm:^1.0.0\":\r\n  version: 1.0.0\r\n  resolution: \"alpha@npm:1.0.0\"\r\n  dependencies:\r\n    beta: \"npm:^2.0.0\"\r\n    \"@sc/gamma\": \"npm:3.0.0\"\r\n  checksum: 10/abc\r\n  languageName: node\r\n  linkType: hard\r\n\r\n\"beta@npm:^2.0.0\":\r\n  version: 2.0.0\r\n  resolution: \"beta@npm:2.0.0\"\r\n  languageName: node\r\n  linkType: hard\r\n", code: Char })

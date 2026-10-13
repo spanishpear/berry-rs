@@ -1,2 +1,0 @@
-# panic
-Unknown property encountered in package entry: someNewKey

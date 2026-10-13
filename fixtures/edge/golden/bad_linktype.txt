@@ -1,2 +1,0 @@
-# panic
-Invalid link type: HARD

@@ -9,9 +9,7 @@ version.workspace    = true
 publish = false
 
 [dependencies]
-berry     = { workspace = true }
-berry-ref = { workspace = true }
-nom       = { workspace = true }
+berry = { workspace = true }
 
 [dev-dependencies]
 rayon  = { workspace = true }

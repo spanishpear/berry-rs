@@ -56,9 +56,9 @@ crates/berry-core/src/
 Lists keep source order and duplicates; `Dependencies::get`, `Bins::get` and
 `Dependencies::last_wins` give the 0.6 (`HashMap`, last wins) semantics.
 
-The differential tests in `crates/berry-test` compare the canonical dump with a
-frozen copy of the 0.6 parser (`crates/berry-ref`) on every Yarn-shaped input,
-and check that everything else parses without a panic.
+The tests in `crates/berry-test` compare the sequential, chunked, parallel,
+byte and file APIs across lockfile fixtures, and check that malformed and
+mutated inputs parse without a panic.
 
 ## Known limitations
 

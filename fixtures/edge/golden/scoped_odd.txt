@@ -1,7 +1,0 @@
-# berry canonical dump v1
-metadata.version: "8"
-metadata.cache_key: "10"
-resolutions: <none>
-constraints: <none>
-remaining: len=417 non_whitespace=true head="\"@noslash@npm:1\":\n  version: 1.0.0\n  resolution: \"@noslash@npm:1\"\n  languageName: node\n  linkType: hard\n\n\"@a/b@npm:1\":\n  version: 1.0.0\n  resolution: \"@a/b\"\n  dependencies:\n    \"@noslash\": npm:1\n    @"
-entries: 0

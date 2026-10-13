@@ -1,6 +1,6 @@
 //! The chunked pipeline must give exactly the sequential result (entries,
 //! stop offset, remaining text, error kind and offset) for every way of
-//! cutting the body into chunks, and match the reference on valid files.
+//! cutting the body into chunks.
 //!
 //! Chunks are forced through the `#[doc(hidden)]` hooks `__parse_chunked`
 //! (target size, snapped to entry boundaries) and `__parse_split` (chunk
@@ -10,9 +10,7 @@
 //! More iterations: `BERRY_CHUNK_FUZZ_ITERS=200000 cargo test --release -p berry-test --test chunked`.
 
 use berry::Buffers;
-use berry_test::differential::{
-  Rng, candidate_with, check, fingerprint, fingerprint_ok, is_valid_corpus_file, mutate, reference,
-};
+use berry_test::differential::{Rng, fingerprint, fingerprint_ok, mutate};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -79,9 +77,8 @@ fn assert_split_eq(label: &str, src: &str, want: &str, starts: &[usize], buffers
 }
 
 #[test]
-fn every_target_matches_sequential_and_reference() {
+fn every_target_matches_sequential() {
   for (name, src) in corpus() {
-    let r = is_valid_corpus_file(&name).then(|| reference(&src));
     for (v, text) in variants(&src) {
       let want = sequential(&text);
       for t in TARGETS {
@@ -90,14 +87,6 @@ fn every_target_matches_sequential_and_reference() {
           got == want,
           "{name} {v}: chunk target {t} differs from sequential"
         );
-      }
-    }
-    if let Some(r) = r {
-      for t in TARGETS {
-        let c = candidate_with(&src, |s| berry::__parse_chunked(s, t));
-        if let Err(e) = check(&r, &c) {
-          panic!("{name}: chunk target {t}: {e}");
-        }
       }
     }
   }

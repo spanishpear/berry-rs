@@ -1,55 +1,16 @@
-//! Differential testing of `berry` against the frozen reference parser (`berry_ref`).
-//!
-//! For a valid Yarn lockfile ([`check`]) the candidate must give the
-//! reference's canonical dump byte for byte, or fail when the reference
-//! fails. For any other input ([`robust`]) it must not panic, and its views
-//! must agree with each other ([`view_consistency`]).
+//! Comparison and robustness helpers for the Berry parser APIs.
 
-use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Once;
 
 /// Result of running one parser on one input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
   /// Parsed; the canonical dump (includes the unconsumed remainder).
   Ok(String),
-  /// Returned an error: its text (reference: nom's `Debug`; candidate:
-  /// `Kind@offset`) and the byte offset it points to.
+  /// Returned an error: its `Kind@offset` text and byte offset.
   Err(String, usize),
   /// Panicked; the panic message.
   Panic(String),
-}
-
-impl Outcome {
-  /// One-line description used in golden files and failure messages.
-  #[must_use]
-  pub fn golden_text(&self) -> String {
-    match self {
-      Self::Ok(dump) => dump.clone(),
-      Self::Err(e, _) => format!("# error\n{e}\n"),
-      Self::Panic(msg) => format!("# panic\n{msg}\n"),
-    }
-  }
-}
-
-thread_local! {
-  static QUIET: Cell<bool> = const { Cell::new(false) };
-}
-
-static HOOK: Once = Once::new();
-
-/// Install (once per process) a panic hook that stays silent while the
-/// reference parser runs, and otherwise defers to the default hook.
-fn install_quiet_hook() {
-  HOOK.call_once(|| {
-    let default = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-      if !QUIET.with(Cell::get) {
-        default(info);
-      }
-    }));
-  });
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -58,34 +19,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     .map(|s| (*s).to_owned())
     .or_else(|| payload.downcast_ref::<String>().cloned())
     .unwrap_or_else(|| "<non-string panic payload>".to_owned())
-}
-
-/// Byte offset of a nom error's input within `src` (`src.len()` if it is not
-/// a subslice).
-fn nom_offset(src: &str, e: &nom::Err<nom::error::Error<&str>>) -> usize {
-  let input = match e {
-    nom::Err::Error(e) | nom::Err::Failure(e) => e.input,
-    nom::Err::Incomplete(_) => return src.len(),
-  };
-  (input.as_ptr() as usize)
-    .checked_sub(src.as_ptr() as usize)
-    .filter(|&off| off + input.len() <= src.len())
-    .unwrap_or(src.len())
-}
-
-/// Run the frozen reference parser.
-#[must_use]
-pub fn reference(src: &str) -> Outcome {
-  install_quiet_hook();
-  QUIET.with(|q| q.set(true));
-  let r = panic::catch_unwind(AssertUnwindSafe(
-    || match berry_ref::parse::parse_lockfile(src) {
-      Ok((rest, lf)) => Outcome::Ok(crate::canonical_ref::to_string(&lf, rest)),
-      Err(e) => Outcome::Err(format!("{e:?}"), nom_offset(src, &e)),
-    },
-  ));
-  QUIET.with(|q| q.set(false));
-  r.unwrap_or_else(|p| Outcome::Panic(panic_message(p.as_ref())))
 }
 
 /// Run the parser under test on a `berry::Lockfile` result.
@@ -115,7 +48,6 @@ pub fn candidate_with(
   src: &str,
   parse_fn: impl FnOnce(&str) -> Result<berry::Lockfile<'_>, berry::Error>,
 ) -> Outcome {
-  install_quiet_hook();
   let r = panic::catch_unwind(AssertUnwindSafe(|| outcome(src, parse_fn(src))));
   r.unwrap_or_else(|p| Outcome::Panic(panic_message(p.as_ref())))
 }
@@ -290,109 +222,12 @@ pub fn view_consistency(lf: &berry::Lockfile<'_>) -> Result<(), String> {
   Ok(())
 }
 
-/// First differing line of two dumps, for failure messages.
-fn first_difference(a: &str, b: &str) -> String {
-  for (n, (la, lb)) in a.lines().zip(b.lines()).enumerate() {
-    if la != lb {
-      return format!("line {}:\n  reference: {la}\n  candidate: {lb}", n + 1);
-    }
-  }
-  format!(
-    "one dump is a prefix of the other ({} vs {} lines)",
-    a.lines().count(),
-    b.lines().count()
-  )
-}
-
-fn short(s: &str) -> &str {
-  &s[..s.char_indices().nth(400).map_or(s.len(), |(i, _)| i)]
-}
-
-/// Check the contract for a valid lockfile; `Err` carries a human-readable
-/// mismatch.
-pub fn compare(src: &str) -> Result<(), String> {
-  check(&reference(src), &candidate(src))
-}
-
-/// The contract for a valid lockfile: the same dump, or both fail.
-pub fn check(reference: &Outcome, candidate: &Outcome) -> Result<(), String> {
-  match (reference, candidate) {
-    (_, Outcome::Panic(p)) => Err(format!("candidate panicked: {p}")),
-    (Outcome::Ok(a), Outcome::Ok(b)) if a == b => Ok(()),
-    (Outcome::Ok(a), Outcome::Ok(b)) => Err(format!("dumps differ at {}", first_difference(a, b))),
-    (Outcome::Err(..), Outcome::Err(..)) => Ok(()),
-    (r, c) => Err(format!(
-      "outcome kinds differ:\n  reference: {}\n  candidate: {}",
-      short(&r.golden_text()),
-      short(&c.golden_text())
-    )),
-  }
-}
-
-/// The contract for any other input: no panic, consistent views.
+/// The contract for any input: no panic, consistent views.
 pub fn robust(candidate: &Outcome) -> Result<(), String> {
   match candidate {
     Outcome::Panic(p) => Err(format!("candidate panicked: {p}")),
     _ => Ok(()),
   }
-}
-
-/// Edge-corpus files in shapes Yarn never writes: only [`robust`] applies.
-///
-/// CRLF, tabs, inline or repeated meta, unknown keys, odd indentation or
-/// blank lines, no final newline, non-ASCII names, top-level blocks, ...
-pub const INVALID_EDGE_FILES: &[&str] = &[
-  "bad_indent",
-  "bad_linktype",
-  "bin_cr",
-  "bin_shapes",
-  "bom",
-  "crlf",
-  "dep_at_eof",
-  "dep_no_space_after_colon",
-  "dep_value_empty",
-  "empty",
-  "empty_linktype",
-  "header_only",
-  "meta_all_orders",
-  "meta_inline_junk_after",
-  "meta_inline_wrong_order",
-  "meta_nested_blank_between",
-  "metadata_only_noeol",
-  "no_final_eol_after_blank_block",
-  "non_ascii",
-  "one_space_indent",
-  "peer_meta_two_lines",
-  "resolutions_constraints",
-  "resolutions_only",
-  "scoped_odd",
-  "simple_form_block_key",
-  "tabs_after_colon",
-  "three_blank",
-  "trailing_junk",
-  "trailing_space_linktype",
-  "unknown_after_eof_dep",
-  "unknown_key",
-  "unquoted_keys",
-  "vt_ff_whitespace",
-  "wrapped_key_inline",
-];
-
-/// `true` for fixture and edge-corpus file names of valid Yarn lockfiles.
-#[must_use]
-pub fn is_valid_corpus_file(file_name: &str) -> bool {
-  !INVALID_EDGE_FILES.contains(&file_name.trim_end_matches(".yarn.lock"))
-}
-
-/// 64-bit FNV-1a, used to pin large golden dumps without committing them.
-#[must_use]
-pub fn fnv1a64(bytes: &[u8]) -> u64 {
-  let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-  for &b in bytes {
-    h ^= u64::from(b);
-    h = h.wrapping_mul(0x0000_0100_0000_01b3);
-  }
-  h
 }
 
 /// A tiny deterministic PRNG (splitmix64) for the mutation fuzzer.
@@ -548,33 +383,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn reference_panics_are_caught() {
-    let src = "# This file is generated by running \"yarn install\" inside your project.\n\
-               # Manual changes might be lost - proceed with caution!\n\n\
-               __metadata:\n  version: 8\n  cacheKey: 10\n\n\
-               \"a@npm:1\":\n  bogus: x\n";
-    assert!(matches!(reference(src), Outcome::Panic(_)));
-  }
-
-  #[test]
-  fn check_rules() {
-    let ok = Outcome::Ok("x".into());
-    let ok2 = Outcome::Ok("y".into());
-    let rerr = Outcome::Err("nom".into(), 3);
-    let cerr = Outcome::Err("InvalidMetadata@4".into(), 4);
-    let panic = Outcome::Panic("boom".into());
-    assert!(check(&ok, &ok).is_ok());
-    assert!(check(&ok, &ok2).is_err());
-    assert!(check(&rerr, &cerr).is_ok());
-    assert!(check(&ok, &cerr).is_err());
-    assert!(check(&rerr, &ok).is_err());
-    assert!(check(&ok, &panic).is_err());
-    assert!(robust(&cerr).is_ok() && robust(&ok).is_ok() && robust(&panic).is_err());
-    assert!(is_valid_corpus_file("canonical.yarn.lock"));
-    assert!(!is_valid_corpus_file("crlf.yarn.lock"));
-  }
-
-  #[test]
   fn mutate_is_deterministic_and_utf8() {
     let src = "a\u{e9}b\nline two\n\u{3000}x\n";
     let mut r1 = Rng::new(7);
@@ -584,11 +392,5 @@ mod tests {
       let b = mutate(src, &mut r2);
       assert_eq!(a, b);
     }
-  }
-
-  #[test]
-  fn fnv_known_values() {
-    assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
-    assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
   }
 }

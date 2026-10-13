@@ -8,7 +8,6 @@ A 24 MB lockfile parses in about 2 ms on 32 cores; see [BENCHMARKING.md](dev-doc
 ```
 crates/
 ├── berry-core/          # Main parser library
-├── berry-ref/           # Frozen 0.6 parser, the reference for differential tests
 ├── berry-test/          # Integration tests, canonical dump
 ├── berry-bench/         # Criterion benchmarks, berry-gen synthetic lockfiles
 ├── berry-bench-bin/     # CLI benchmarking tools (berry-parse-bench)
