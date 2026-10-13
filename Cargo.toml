@@ -9,7 +9,7 @@ resolver = "2"
   edition     = "2024"
   license     = "MIT OR Apache-2.0"
   repository  = "https://github.com/spanishpear/berry"
-  version     = "0.7.0"
+  version     = "0.7.1"
 
   [workspace.dependencies]
   berry      = { path = "crates/berry-core" }
