@@ -195,13 +195,16 @@ fn prefetch(map: &Mmap) {
   (0..chunks).into_par_iter().for_each(|i| {
     let at = (i * step).min(map.len());
     let n = step.min(map.len() - at);
-    if map.advise_range(Advice::PopulateRead, at, n).is_err() {
-      drop(map.advise_range(Advice::WillNeed, at, n));
+    #[cfg(target_os = "linux")]
+    if map.advise_range(Advice::PopulateRead, at, n).is_ok() {
+      return;
     }
+    drop(map.advise_range(Advice::WillNeed, at, n));
   });
 }
 
 /// Pages of a mapping sampled by [`looks_cached`].
+#[cfg(target_os = "linux")]
 const CACHE_SAMPLES: usize = 16;
 
 /// `true` if [`CACHE_SAMPLES`] pages spread over `map` are all in the page
@@ -209,7 +212,7 @@ const CACHE_SAMPLES: usize = 16;
 /// from the device and a prefetch only costs time. A file that is only
 /// partly cached is likely to miss a sample and gets the prefetch. Any
 /// `mincore` failure counts as not cached.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 pub fn looks_cached(map: &[u8]) -> bool {
   // Sample offsets are multiples of this, so they are page-aligned for page
   // sizes up to 64 KiB (larger pages make `mincore` fail: not cached).
@@ -230,7 +233,7 @@ pub fn looks_cached(map: &[u8]) -> bool {
 }
 
 /// Without `mincore`, assume a prefetch is worth it.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(target_os = "macos")]
 pub fn looks_cached(_map: &[u8]) -> bool {
   false
 }
@@ -304,14 +307,14 @@ mod tests {
     // SAFETY: test file, written above and not modified while mapped.
     let map = unsafe { Mmap::map(&file) }.unwrap();
     assert_eq!(&map[..], &text[..]);
-    if cfg!(any(target_os = "linux", target_os = "android")) {
+    if cfg!(target_os = "linux") {
       assert!(looks_cached(&map));
     }
     drop(map);
     std::fs::remove_file(&path).unwrap();
     // Any slice: no crash, no access (heap memory, empty, one byte).
     let _ = looks_cached(&text);
-    assert!(looks_cached(&[]));
+    assert_eq!(looks_cached(&[]), cfg!(target_os = "linux"));
     let _ = looks_cached(&text[1..2]);
   }
 }
