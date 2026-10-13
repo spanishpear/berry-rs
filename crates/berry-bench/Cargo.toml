@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 berry        = { workspace = true }
 berry-test   = { workspace = true }
+clap         = { workspace = true }
 criterion    = { workspace = true }
 memory-stats = { workspace = true }
 
@@ -20,3 +21,4 @@ name    = "parser_benchmarks"
 
 [dev-dependencies]
 criterion = { workspace = true }
+rayon     = { workspace = true }

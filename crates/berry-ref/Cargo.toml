@@ -1,0 +1,17 @@
+[package]
+authors.workspace    = true
+description          = "Frozen copy of the berry 0.6 nom parser (main @ 4224191), used only as a differential test oracle"
+edition.workspace    = true
+license.workspace    = true
+name                 = "berry-ref"
+repository.workspace = true
+version.workspace    = true
+
+publish = false
+
+[dependencies]
+nom      = { workspace = true }
+smallvec = { workspace = true }
+
+[lints]
+workspace = true

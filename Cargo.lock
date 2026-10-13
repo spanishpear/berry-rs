@@ -75,37 +75,43 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "berry"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
- "nom",
- "smallvec",
+ "libc",
+ "memchr",
+ "memmap2",
+ "rayon",
 ]
 
 [[package]]
 name = "berry-bench"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "berry",
  "berry-test",
+ "clap",
  "criterion",
  "memory-stats",
+ "rayon",
 ]
 
 [[package]]
 name = "berry-bench-bin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "berry",
  "berry-test",
  "clap",
  "memory-stats",
+ "mimalloc",
+ "rayon",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "berry-compare-bin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "berry",
  "berry-test",
@@ -116,9 +122,10 @@ dependencies = [
 
 [[package]]
 name = "berry-dump-bin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "berry",
+ "berry-test",
  "clap",
 ]
 
@@ -133,10 +140,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-ref"
+version = "0.7.0"
+dependencies = [
+ "nom",
+ "smallvec",
+]
+
+[[package]]
 name = "berry-test"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "berry",
+ "berry-ref",
+ "nom",
+ "rayon",
  "rstest",
 ]
 
@@ -157,6 +175,16 @@ name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
+name = "cc"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
+dependencies = [
+ "find-msvc-tools",
+ "shlex",
+]
 
 [[package]]
 name = "cfg-if"
@@ -354,6 +382,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "find-msvc-tools"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+
+[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -535,10 +569,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memory-stats"
@@ -548,6 +601,15 @@ checksum = "c73f5c649995a115e1a0220b35e4df0a1294500477f97a91d0660fb5abeb574a"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
@@ -884,6 +946,12 @@ dependencies = [
  "serde",
  "serde_core",
 ]
+
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "slab"

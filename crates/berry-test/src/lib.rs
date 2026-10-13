@@ -4,6 +4,15 @@
 //! This crate provides comprehensive integration tests using real Yarn lockfile
 //! fixtures to validate the parsing functionality across various lockfile formats.
 
+pub mod canonical;
+pub mod differential;
+
+/// The canonical dump of the frozen reference parser (`berry_ref`), produced by
+/// the same code as [`canonical`] so the two outputs are directly comparable.
+pub mod canonical_ref {
+  crate::canonical_dump_impl!(berry_ref);
+}
+
 use std::path::Path;
 
 /// Load a fixture file from the fixtures directory
@@ -39,7 +48,6 @@ pub fn load_fixture_from_path(fixture_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use berry::parse::parse_lockfile;
   use rstest::rstest;
   use std::path::PathBuf;
 
@@ -58,13 +66,14 @@ mod tests {
 
     println!("Testing fixture: {filename}");
 
-    let result = parse_lockfile(&contents);
+    let result = berry::parse(&contents);
     assert!(
       result.is_ok(),
       "Should successfully parse lockfile: {filename}"
     );
 
-    let (remaining, lockfile) = result.unwrap();
+    let lockfile = result.unwrap();
+    let remaining = lockfile.remaining();
 
     // Critical validation: ensure the entire file was parsed
     if !remaining.is_empty() {
@@ -91,13 +100,13 @@ mod tests {
 
     // Verify we parsed at least some packages
     assert!(
-      !lockfile.entries.is_empty(),
+      !lockfile.is_empty(),
       "Should parse at least one package from {filename}"
     );
 
     println!(
       "Successfully parsed {} packages from {filename}",
-      lockfile.entries.len()
+      lockfile.len()
     );
   }
 
@@ -117,16 +126,16 @@ mod tests {
       "Should contain workspace packages"
     );
 
-    let result = parse_lockfile(&contents);
+    let result = berry::parse(&contents);
     assert!(
       result.is_ok(),
       "Should successfully parse minimal berry lockfile"
     );
 
-    let lockfile = result.unwrap().1;
+    let lockfile = result.unwrap();
     dbg!(&lockfile);
-    assert_eq!(lockfile.metadata.version, "6");
-    assert_eq!(lockfile.entries.len(), 5);
+    assert_eq!(lockfile.metadata().version, "6");
+    assert_eq!(lockfile.len(), 5);
   }
 
   #[test]

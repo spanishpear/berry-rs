@@ -39,6 +39,129 @@ cargo bench --package berry-bench --bench parser_benchmarks -- --quick
 
 **Which tool to use?** Reach for `berry-bench-bin` when you want a fast, human-friendly gut check (single fixtures, ad-hoc lockfiles via `--fixture-path`, baseline comparisons) while iterating locally. Swap to the Criterion suite whenever you need statistically rigorous evidence—e.g., validating parser changes before merging, capturing p-values/CI ranges, or producing reports that will influence performance gates in CI.
 
+## Performance and Equivalence Harness
+
+For parser work on large lockfiles there are four pieces that fit together: a synthetic
+24 MB lockfile, a full-fidelity dump (the equivalence oracle), a parse-only timing binary and
+a script that compares two checkouts. None of them needs a private lockfile; any real
+`yarn.lock` can be passed in by path.
+
+### Synthetic lockfile (`berry-gen`)
+
+`berry-gen` writes a deterministic (seeded) yarn berry v8 lockfile that follows a rounded
+"large-monorepo profile": about 27k entries, roughly half of them workspace entries with
+long dependency lists, multi-descriptor headers, quoted and unquoted keys, patch and portal
+entries, optional `bin`, `conditions`, `dependenciesMeta` and `peerDependenciesMeta` blocks.
+All names are pseudo-words from the RNG; the same seed and size always give the same bytes.
+
+```bash
+# ~24 MB -> target/bench-fixtures/large-24mb.yarn.lock (gitignored via /target)
+cargo run --release -p berry-bench --bin berry-gen
+
+# smaller variants
+cargo run --release -p berry-bench --bin berry-gen -- --size 1MB -o /tmp/small.yarn.lock
+cargo run --release -p berry-bench --bin berry-gen -- --entries 500 -o /tmp/tiny.yarn.lock
+```
+
+The profile parameters live in `crates/berry-bench/src/synth.rs` (`Profile`). Tests in
+`crates/berry-bench/tests/synth_parses.rs` assert that the parser consumes generated files
+completely, so a generator change that produces unparseable input fails CI.
+
+### Canonical dump (`berry-dump-bin`)
+
+`berry-dump-bin <lockfile>` prints every parsed field in a deterministic text form (see
+`crates/berry-test/src/canonical.rs`): metadata, `resolutions`/`constraints`, each entry's
+descriptors (ident, raw range, protocol, selector) and every `Package` field including all
+dependency, meta and `bin` maps (sorted by key because `HashMap` order is random), plus the
+unparsed remainder. Two parsers are equivalent on an input exactly when the dumps are
+byte-identical.
+
+```bash
+cargo run --release --bin berry-dump-bin -- path/to/yarn.lock -o dump.txt
+cargo run --release --bin berry-dump-bin -- --format debug path/to/yarn.lock   # raw {:#?}
+```
+
+When a field is added to the data model, add it to `canonical.rs` too, otherwise the oracle
+silently ignores it.
+
+### Parse-only timing (`berry-parse-bench`)
+
+Reads the file into memory once, then times one parse API for N iterations. The result is
+dropped outside the timed region and the drop is reported separately.
+
+```bash
+cargo run --release -p berry-bench-bin --bin berry-parse-bench -- path/to/yarn.lock
+#   -n 50 --warmup 5     iteration counts
+#   --api str|reuse|bytes|file
+#                        berry::parse (default), parse_with + recycled Buffers (0 allocations),
+#                        parse_bytes (UTF-8 validation + parse), parse_file (I/O in the timed
+#                        region, unmap in the drop)
+#   --threads N          size of the rayon global pool (1: every parse is sequential)
+#   --chunk-target B     time berry::__parse_chunked with ~B-byte chunks instead
+#   --include-read       also time read_to_string + parse
+#   --stages             parse / walk every view / canonical dump / drop
+#   --table-stats        table row counts and bytes per row, then exit
+#   --json               machine-readable output (used by bench-compare.sh)
+#   --once               one parse + exit, no warmup (hyperfine target; --api file: parse_file)
+
+# allocation counts (counting global allocator; separate feature so timings are unaffected)
+cargo run --release -p berry-bench-bin --features alloc-count --bin berry-parse-bench -- path/to/yarn.lock --alloc
+
+# timings under mimalloc (v3, the allocator of afm-tools); measurement only, not a library feature
+cargo run --release -p berry-bench-bin --features mimalloc --bin berry-parse-bench -- path/to/yarn.lock
+```
+
+It reports min/median/mean/max in ms, MB/s (decimal megabytes) and peak RSS (`VmHWM`). With
+`--alloc`: allocation, reallocation and free counts, total bytes allocated, peak live heap
+during the parse, bytes retained by the result and the number of span tables that outgrew
+their reserved window (`Lockfile::__spills`, expected 0 for real lockfiles).
+
+The numbers in this repository are taken with `RUSTFLAGS=-Ctarget-cpu=x86-64` (what a
+consumer of the crate gets; the repo's `.cargo/config.toml` builds for the native CPU).
+
+For Criterion, `cargo bench -p berry-bench --bench parser_benchmarks -- large_lockfile` runs
+parse-only and parse+drop on the synthetic 24 MB file with byte throughput. Set
+`BERRY_BENCH_LOCKFILE=/path/to/yarn.lock` to benchmark any other file instead.
+
+### Comparing two checkouts (`scripts/bench-compare.sh`)
+
+```bash
+scripts/bench-compare.sh path/to/yarn.lock               # equivalence + speed
+scripts/bench-compare.sh path/to/yarn.lock --alloc       # plus allocation counts
+scripts/bench-compare.sh path/to/yarn.lock --no-speed    # only the equivalence diff
+```
+
+The script builds `BASELINE_DIR` (default `/home/ubuntu/contrib/berry-wt/baseline`) and
+`CANDIDATE_DIR` (default: the checkout containing the script) in `--release`, diffs the
+canonical dumps, then runs hyperfine (process level) and interleaved in-process rounds of
+`berry-parse-bench`. **It exits 1 if the dumps differ**, 0 if identical, 2 on usage or
+build errors. Inputs that fail to parse identically in both trees count as equivalent.
+Dumps are deleted on exit (`--keep` retains them) and only hashes and counts are printed
+unless `--show-diff` is given, so it is safe to run on a lockfile whose contents are private.
+
+The baseline is a worktree on a branch (`perf-baseline`) that carries the same harness
+commits on top of the unchanged `main` parser, so both sides are built with identical tooling:
+
+```bash
+git worktree add ../berry-wt/baseline -b perf-baseline main
+git -C ../berry-wt/baseline cherry-pick <harness commits>                   # no parser changes
+diff -r ../berry-wt/baseline/crates/berry-core/src crates/berry-core/src    # parser delta
+```
+
+Build flags matter: `.cargo/config.toml` sets `-Ctarget-cpu=native` and frame pointers, which
+downstream consumers do not inherit. Set `RUSTFLAGS` (for example `RUSTFLAGS=""`) to measure
+what a consumer gets. Differences below about 1% between two identical trees are noise; very
+small fixtures (a few microseconds) show large percentage noise and are only meaningful for
+the equivalence diff.
+
+Notes on interpreting results:
+
+- Profiling tools (`samply`, `perf`) may be unavailable in sandboxes (`perf_event_open`
+  blocked). Use `--stages` for a coarse breakdown and `--alloc` for allocation behaviour.
+- Consumers often build the parser in a dev profile. Set `opt-level = 3` for `berry` and its
+  dependencies (`memchr`, `rayon`) and disable debug assertions and overflow checks to get
+  near release speed.
+
 ## Benchmark Categories
 
 ### Fixture Parsing
@@ -246,10 +369,8 @@ yarn4-patch.lock: 0 bytes heap usage
 ### Optimization
 
 - Use `&str` instead of `String` during parsing
-- Use `fold_many0` instead of `many0`
 - Defer allocation until final data structures
 - Parse everything in one pass
-- avoid the `alloc` feature of nom
 
 ### Adding New Fixtures
 
@@ -344,6 +465,5 @@ perf report
 ## Related
 
 - [Criterion Documentation](https://docs.rs/criterion/) - Statistical benchmarking framework
-- [Nom Documentation](https://docs.rs/nom/) - Parser combinator library
 - [Memory Stats Documentation](https://docs.rs/memory-stats/) - Memory usage tracking
 - [Core Parser](CORE_PARSER.md) - Parser implementation details

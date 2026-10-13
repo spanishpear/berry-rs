@@ -1,4 +1,3 @@
-use berry::parse::parse_lockfile;
 use berry_test::load_fixture;
 use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
 use memory_stats::memory_stats;
@@ -52,9 +51,9 @@ fn benchmark_fixtures(c: &mut Criterion) {
   group.bench_function("minimal_berry", |b| {
     let fixture = load_fixture("minimal-berry.lock");
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(result.is_ok(), "Should parse minimal fixture successfully");
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -62,12 +61,12 @@ fn benchmark_fixtures(c: &mut Criterion) {
   group.bench_function("workspaces", |b| {
     let fixture = load_fixture("workspaces.yarn.lock");
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(
         result.is_ok(),
         "Should parse workspaces fixture successfully"
       );
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -75,12 +74,12 @@ fn benchmark_fixtures(c: &mut Criterion) {
   group.bench_function("auxiliary_packages", |b| {
     let fixture = load_fixture("auxiliary-packages.yarn.lock");
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(
         result.is_ok(),
         "Should parse auxiliary packages fixture successfully"
       );
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -88,12 +87,12 @@ fn benchmark_fixtures(c: &mut Criterion) {
   group.bench_function("duplicate_packages", |b| {
     let fixture = load_fixture("berry.lock");
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(
         result.is_ok(),
         "Should parse duplicate packages fixture successfully"
       );
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -101,12 +100,12 @@ fn benchmark_fixtures(c: &mut Criterion) {
   group.bench_function("resolutions_patches", |b| {
     let fixture = load_fixture("resolutions-patches.yarn.lock");
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(
         result.is_ok(),
         "Should parse resolutions patches fixture successfully"
       );
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -133,9 +132,9 @@ fn benchmark_parsing_speed_vs_size(c: &mut Criterion) {
 
     group.bench_function(format!("{size_label}_({file_size} bytes)"), |b| {
       b.iter(|| {
-        let result = parse_lockfile(black_box(&fixture));
+        let result = berry::parse(black_box(&fixture));
         assert!(result.is_ok(), "Should parse {fixture_name} successfully");
-        result.unwrap().1
+        result.unwrap()
       });
     });
   }
@@ -166,7 +165,7 @@ fn benchmark_memory_usage(c: &mut Criterion) {
 
         for _ in 0..iters {
           let start = Instant::now();
-          let result = parse_lockfile(&fixture);
+          let result = berry::parse(&fixture);
           let duration = start.elapsed();
           total_duration += duration;
 
@@ -195,14 +194,14 @@ fn benchmark_zero_allocation(c: &mut Criterion) {
     b.iter(|| {
       // This benchmark helps identify if we're making unexpected allocations
       // during the parsing phase
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(result.is_ok(), "Should parse successfully");
 
-      let lockfile = result.unwrap().1;
+      let lockfile = result.unwrap();
 
       // Access some data to ensure it's actually parsed
-      assert_eq!(lockfile.metadata.version, "6");
-      assert_eq!(lockfile.entries.len(), 5);
+      assert_eq!(lockfile.metadata().version, "6");
+      assert_eq!(lockfile.len(), 5);
 
       lockfile
     });
@@ -233,7 +232,7 @@ fn benchmark_heap_usage(c: &mut Criterion) {
         let before = memory_stats().unwrap();
 
         // Parse the lockfile
-        let result = parse_lockfile(black_box(&fixture));
+        let result = berry::parse(black_box(&fixture));
         assert!(result.is_ok(), "Should parse {fixture_name} successfully");
 
         // Get final memory stats
@@ -245,7 +244,7 @@ fn benchmark_heap_usage(c: &mut Criterion) {
 
         // Return the lockfile to ensure it's not optimized away
         // and to measure the actual memory footprint of the parsed data
-        let lockfile = result.unwrap().1;
+        let lockfile = result.unwrap();
 
         // Print heap usage info (this will show in benchmark output)
         if cfg!(debug_assertions) {
@@ -267,14 +266,14 @@ fn benchmark_individual_functions(c: &mut Criterion) {
   let mut group = c.benchmark_group("individual_functions");
   configure_group(&mut group, BenchmarkKind::Fast);
 
-  // Test parse_lockfile function specifically
+  // Test the parse function specifically
   let fixture = load_fixture("minimal-berry.lock");
 
-  group.bench_function("parse_lockfile_only", |b| {
+  group.bench_function("parse_only", |b| {
     b.iter(|| {
-      let result = parse_lockfile(black_box(&fixture));
+      let result = berry::parse(black_box(&fixture));
       assert!(result.is_ok(), "Should parse successfully");
-      result.unwrap().1
+      result.unwrap()
     });
   });
 
@@ -299,9 +298,9 @@ fn benchmark_input_characteristics(c: &mut Criterion) {
 
     group.bench_function(format!("{characteristic}_characteristic"), |b| {
       b.iter(|| {
-        let result = parse_lockfile(black_box(&fixture));
+        let result = berry::parse(black_box(&fixture));
         assert!(result.is_ok(), "Should parse {fixture_name} successfully");
-        result.unwrap().1
+        result.unwrap()
       });
     });
   }
@@ -347,9 +346,9 @@ fn benchmark_all_fixtures(c: &mut Criterion) {
     let label = fixture_name.replace(['.', '-'], "_").to_string();
     group.bench_function(label, |b| {
       b.iter(|| {
-        let result = parse_lockfile(black_box(&fixture));
+        let result = berry::parse(black_box(&fixture));
         assert!(result.is_ok(), "Should parse {fixture_name} successfully");
-        result.unwrap().1
+        result.unwrap()
       });
     });
   }
@@ -357,8 +356,83 @@ fn benchmark_all_fixtures(c: &mut Criterion) {
   group.finish();
 }
 
+/// Load the large synthetic lockfile (large-monorepo profile, ~24 MB).
+///
+/// Uses `BERRY_BENCH_LOCKFILE` if set (any lockfile path), otherwise the file
+/// written by `berry-gen` under `target/bench-fixtures/`, otherwise generates
+/// the identical bytes in memory (the generator is deterministic).
+fn load_large_lockfile() -> (String, &'static str) {
+  use berry_bench::synth::{Profile, Target, generate};
+
+  if let Ok(path) = std::env::var("BERRY_BENCH_LOCKFILE") {
+    return (
+      fs::read_to_string(&path).expect("read BERRY_BENCH_LOCKFILE"),
+      "custom",
+    );
+  }
+  let default =
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/bench-fixtures/large-24mb.yarn.lock");
+  if let Ok(text) = fs::read_to_string(default) {
+    return (text, "synthetic_24mb");
+  }
+  let (text, _) = generate(0x00BE_FF11, Target::Bytes(24_000_000), &Profile::default());
+  (text, "synthetic_24mb")
+}
+
+/// Parse-only throughput on the ~24 MB synthetic lockfile.
+fn benchmark_large_lockfile(c: &mut Criterion) {
+  let (text, label) = load_large_lockfile();
+  let mut group = c.benchmark_group("large_lockfile");
+  group
+    .sample_size(20)
+    .measurement_time(Duration::from_secs(8))
+    .warm_up_time(Duration::from_secs(1))
+    .noise_threshold(NOISE_THRESHOLD)
+    .throughput(criterion::Throughput::Bytes(text.len() as u64));
+
+  // Result is dropped outside the timed region (iter_with_large_drop).
+  group.bench_function(format!("{label}/parse"), |b| {
+    b.iter_with_large_drop(|| {
+      let lockfile = berry::parse(black_box(&text)).expect("parse");
+      assert!(
+        lockfile.remaining().trim().is_empty(),
+        "lockfile must parse fully"
+      );
+      lockfile
+    });
+  });
+
+  // Steady state for a caller that parses repeatedly: buffers are recycled.
+  group.bench_function(format!("{label}/parse_reuse"), |b| {
+    let mut buffers = berry::Buffers::new();
+    b.iter(|| {
+      let lockfile = berry::parse_with(black_box(&text), &mut buffers).expect("parse");
+      assert!(
+        lockfile.remaining().trim().is_empty(),
+        "lockfile must parse fully"
+      );
+      buffers = lockfile.into_buffers();
+    });
+  });
+
+  // End-to-end for a consumer: parse then drop inside the timed region.
+  group.bench_function(format!("{label}/parse_and_drop"), |b| {
+    b.iter(|| {
+      let lockfile = berry::parse(black_box(&text)).expect("parse");
+      assert!(
+        lockfile.remaining().trim().is_empty(),
+        "lockfile must parse fully"
+      );
+      drop(black_box(lockfile));
+    });
+  });
+
+  group.finish();
+}
+
 criterion_group!(
   benches,
+  benchmark_large_lockfile,
   benchmark_fixtures,
   benchmark_parsing_speed_vs_size,
   benchmark_memory_usage,
