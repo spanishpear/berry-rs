@@ -5,6 +5,7 @@ edition.workspace    = true
 license.workspace    = true
 name                 = "berry-node-bindings"
 repository.workspace = true
+publish              = false
 
 [lib]
 # cdylib is a dynamic library e.g. that allows us to be loaded by Node.js
